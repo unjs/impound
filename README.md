@@ -7,6 +7,8 @@
 
 > Builder-agnostic plugin to allow restricting import patterns in certain parts of your code-base.
 
+This package is an [unplugin](https://unplugin.unjs.io/) which provides support for a wide range of bundlers.
+
 ## Usage
 
 Install package:
@@ -17,11 +19,11 @@ npm install impound
 ```
 
 ```js
+// rollup.config.js
 import { dirname } from 'node:path'
 import { ImpoundPlugin } from 'impound'
 
-const build = await rollup({
-  input: 'entry.js',
+export default {
   plugins: [
     ImpoundPlugin.rollup({
       cwd: dirname(import.meta.url),
@@ -32,15 +34,8 @@ const build = await rollup({
       ]
     }),
   ],
-})
+}
 ```
-
-## 🚧 TODO
-
-- [x] add docs
-- [x] update playground
-- [x] push to GitHub
-- [ ] migrate to `unjs/`
 
 ## 💻 Development
 
