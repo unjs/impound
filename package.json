@@ -1,0 +1,62 @@
+{
+  "name": "custodio",
+  "type": "module",
+  "version": "0.0.0",
+  "packageManager": "pnpm@9.4.0",
+  "description": "",
+  "license": "MIT",
+  "repository": "unjs/custodio",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "unbuild",
+    "dev": "vitest dev",
+    "lint": "eslint . --fix",
+    "prepare": "simple-git-hooks",
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm lint && pnpm test",
+    "release": "bumpp && pnpm publish",
+    "test": "pnpm test:unit && pnpm test:types",
+    "test:unit": "vitest",
+    "test:types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rollup/pluginutils": "^5.1.0",
+    "mlly": "^1.7.1",
+    "pathe": "^1.1.2",
+    "unenv": "^1.10.0",
+    "unplugin": "^1.12.2"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "latest",
+    "@vitest/coverage-v8": "latest",
+    "bumpp": "latest",
+    "eslint": "latest",
+    "lint-staged": "latest",
+    "rollup": "^4.21.1",
+    "simple-git-hooks": "latest",
+    "typescript": "latest",
+    "unbuild": "latest",
+    "vite": "latest",
+    "vitest": "latest"
+  },
+  "resolutions": {
+    "custodio": "link:."
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npx lint-staged"
+  },
+  "lint-staged": {
+    "*.{js,ts,mjs,cjs,json,.*rc}": [
+      "pnpm eslint --fix"
+    ]
+  }
+}
