@@ -3,7 +3,7 @@ import { resolvePath } from 'mlly'
 import { isAbsolute, join, relative } from 'pathe'
 import { createFilter } from '@rollup/pluginutils'
 
-export interface CustodioOptions {
+export interface ImpoundOptions {
   /** An array of patterns of importers to apply the import protection rules to. */
   include?: Array<string | RegExp>
   /** An array of patterns of importers where the import protection rules explicitly do not apply. */
@@ -20,12 +20,12 @@ export interface CustodioOptions {
 
 const RELATIVE_IMPORT_RE = /^\.\.?\//
 
-export const CustodioPlugin = createUnplugin((options: CustodioOptions) => {
+export const ImpoundPlugin = createUnplugin((options: ImpoundOptions) => {
   const filter = createFilter(options.include, options.exclude)
   const proxy = resolvePath('unenv/runtime/mock/proxy', { url: import.meta.url })
 
   return {
-    name: 'custodio',
+    name: 'impound',
     enforce: 'pre',
     resolveId(id, importer) {
       if (!importer || !filter(importer)) {

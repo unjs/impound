@@ -1,11 +1,11 @@
 import { dirname } from 'node:path'
-import { CustodioPlugin } from 'custodio'
+import { ImpoundPlugin } from 'impound'
 import { rollup } from 'rollup'
 
 await rollup({
   input: 'src/index.js',
   plugins: [
-    CustodioPlugin.rollup({
+    ImpoundPlugin.rollup({
       cwd: dirname(import.meta.url),
       include: [/src\/*/],
       patterns: [

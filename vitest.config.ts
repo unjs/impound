@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   resolve: {
     alias: {
-      custodio: fileURLToPath(
+      impound: fileURLToPath(
         new URL('./src/index.ts', import.meta.url).href,
       ),
     },

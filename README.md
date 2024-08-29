@@ -1,4 +1,4 @@
-# custodio
+# impound
 
 [![npm version][npm-version-src]][npm-version-href]
 [![npm downloads][npm-downloads-src]][npm-downloads-href]
@@ -13,17 +13,17 @@ Install package:
 
 ```sh
 # npm
-npm install custodio
+npm install impound
 ```
 
 ```js
 import { dirname } from 'node:path'
-import { CustodioPlugin } from 'custodio'
+import { ImpoundPlugin } from 'impound'
 
 const build = await rollup({
   input: 'entry.js',
   plugins: [
-    CustodioPlugin.rollup({
+    ImpoundPlugin.rollup({
       cwd: dirname(import.meta.url),
       include: [/src\/*/],
       patterns: [
@@ -57,11 +57,11 @@ Published under [MIT License](./LICENCE).
 
 <!-- Badges -->
 
-[npm-version-src]: https://img.shields.io/npm/v/custodio?style=flat-square
-[npm-version-href]: https://npmjs.com/package/custodio
-[npm-downloads-src]: https://img.shields.io/npm/dm/custodio?style=flat-square
-[npm-downloads-href]: https://npmjs.com/package/custodio
-[github-actions-src]: https://img.shields.io/github/actions/workflow/status/unjs/custodio/ci.yml?branch=main&style=flat-square
-[github-actions-href]: https://github.com/unjs/custodio/actions?query=workflow%3Aci
-[codecov-src]: https://img.shields.io/codecov/c/gh/unjs/custodio/main?style=flat-square
-[codecov-href]: https://codecov.io/gh/unjs/custodio
+[npm-version-src]: https://img.shields.io/npm/v/impound?style=flat-square
+[npm-version-href]: https://npmjs.com/package/impound
+[npm-downloads-src]: https://img.shields.io/npm/dm/impound?style=flat-square
+[npm-downloads-href]: https://npmjs.com/package/impound
+[github-actions-src]: https://img.shields.io/github/actions/workflow/status/unjs/impound/ci.yml?branch=main&style=flat-square
+[github-actions-href]: https://github.com/unjs/impound/actions?query=workflow%3Aci
+[codecov-src]: https://img.shields.io/codecov/c/gh/unjs/impound/main?style=flat-square
+[codecov-href]: https://codecov.io/gh/unjs/impound

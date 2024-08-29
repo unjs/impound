@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  custodio: link:.
+  impound: link:.
 
 importers:
 
@@ -63,7 +63,7 @@ importers:
 
   playground:
     dependencies:
-      custodio:
+      impound:
         specifier: link:..
         version: link:..
       rollup:

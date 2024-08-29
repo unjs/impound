@@ -1,25 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { rollup } from 'rollup'
 import type { RollupError } from 'rollup'
-import { CustodioPlugin } from '../src'
-import type { CustodioOptions } from '../src'
+import { ImpoundPlugin } from '../src'
+import type { ImpoundOptions } from '../src'
 
-describe('custodio plugin', () => {
+describe('impound plugin', () => {
   const code = (id: string) => `import thing from "${id}";console.log(thing)`
 
   it('prevents importing a disallowed pattern', async () => {
     const result = await process(code('bar'), { patterns: [['bar']] }) as RollupError
-    expect(result.message).toMatchInlineSnapshot(`"[plugin custodio] Invalid import [importing \`bar\` from \`entry.js\`]"`)
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar\` from \`entry.js\`]"`)
   })
 
   it('should work with relative imports', async () => {
     const result = await process(code('./bar.js'), { patterns: [['bar.js']] }) as RollupError
-    expect(result.message).toMatchInlineSnapshot(`"[plugin custodio] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
   })
 
   it('should handle absolute paths', async () => {
     const result = await process(code('/root/bar.js'), { cwd: '/root', patterns: [['bar.js']] }) as RollupError
-    expect(result.message).toMatchInlineSnapshot(`"[plugin custodio] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
   })
 
   it(`doesn't apply rule to excluded files`, async () => {
@@ -33,18 +33,18 @@ describe('custodio plugin', () => {
 
   it('provides a helpful error message when importing a disallowed pattern', async () => {
     const result = await process(code('bar'), { patterns: [['bar', '"bar" is a dangerous library and should never be used.']] }) as RollupError
-    expect(result.message).toMatchInlineSnapshot(`"[plugin custodio] "bar" is a dangerous library and should never be used. [importing \`bar\` from \`entry.js\`]"`)
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] "bar" is a dangerous library and should never be used. [importing \`bar\` from \`entry.js\`]"`)
   })
 })
 
-async function process(code: string, opts: CustodioOptions) {
+async function process(code: string, opts: ImpoundOptions) {
   const libs = ['foo', 'bar']
 
   try {
     const build = await rollup({
       input: 'entry.js',
       plugins: [
-        CustodioPlugin.rollup(opts),
+        ImpoundPlugin.rollup(opts),
         {
           name: 'entry',
           load: id => id === 'entry.js' ? code : undefined,
