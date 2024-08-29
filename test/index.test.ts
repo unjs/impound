@@ -44,7 +44,6 @@ async function process(code: string, opts: CustodioOptions) {
     const build = await rollup({
       input: 'entry.js',
       plugins: [
-        // @ts-expect-error mismatching rollup types
         CustodioPlugin.rollup(opts),
         {
           name: 'entry',
