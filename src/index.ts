@@ -11,6 +11,9 @@ export interface CustodioOptions {
 
   cwd?: string
 
+  /** Whether to throw an error or not. if set to `false`, an error will be logged to console instead. */
+  error?: boolean
+
   /** An array of patterns to prevent being imported, along with an optional warning to display.  */
   patterns: [importPattern: string | RegExp, warning?: string][]
 }
@@ -38,11 +41,13 @@ export const CustodioPlugin = createUnplugin((options: CustodioOptions) => {
       }
 
       let matched = false
+
+      const logError = options.error === false ? console.error : this.error.bind(this)
       for (const [pattern, warning] of options.patterns) {
         const usesImport = pattern instanceof RegExp ? pattern.test(id) : pattern === id
         if (usesImport) {
           const relativeImporter = isAbsolute(importer) && options.cwd ? relative(options.cwd, importer) : importer
-          this.error(`${warning || 'Invalid import'} [importing \`${id}\` from \`${relativeImporter}\`]`)
+          logError(`${warning || 'Invalid import'} [importing \`${id}\` from \`${relativeImporter}\`]`)
           matched = true
         }
       }

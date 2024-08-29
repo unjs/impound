@@ -24,12 +24,16 @@ describe('custodio plugin', () => {
 
   it(`doesn't apply rule to excluded files`, async () => {
     const result = await process(code('bar'), { patterns: [['foo']] })
-    expect(result).toMatchInlineSnapshot(`[RollupError: Error loading "entry.js": plugin load hook should return a string, a { code, map } object, or nothing/null.]`)
+    expect(result).toMatchInlineSnapshot(`
+      "var thing = "loaded";
+
+      console.log(thing);"
+    `)
   })
 
   it('provides a helpful error message when importing a disallowed pattern', async () => {
     const result = await process(code('bar'), { patterns: [['bar', '"bar" is a dangerous library and should never be used.']] }) as RollupError
-    expect(result.message).toMatchInlineSnapshot(`"Error loading "entry.js": plugin load hook should return a string, a { code, map } object, or nothing/null."`)
+    expect(result.message).toMatchInlineSnapshot(`"[plugin custodio] "bar" is a dangerous library and should never be used. [importing \`bar\` from \`entry.js\`]"`)
   })
 })
 
