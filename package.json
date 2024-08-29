@@ -1,7 +1,7 @@
 {
   "name": "custodio",
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "packageManager": "pnpm@9.9.0",
   "description": "Builder-agnostic plugin to allow restricting import patterns in certain parts of your code-base.",
   "license": "MIT",
