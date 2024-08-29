@@ -1,7 +1,17 @@
-import assert from 'node:assert'
-import * as pkg from 'custodio'
+import { dirname } from 'node:path'
+import { CustodioPlugin } from 'custodio'
+import { rollup } from 'rollup'
 
-// eslint-disable-next-line no-console
-console.log(pkg.welcome())
-
-assert.strictEqual(pkg.welcome(), 'hello world')
+await rollup({
+  input: 'src/index.js',
+  plugins: [
+    CustodioPlugin.rollup({
+      cwd: dirname(import.meta.url),
+      include: [/src\/*/],
+      patterns: [
+        [/^node:.*/], // disallows all node imports
+        ['@nuxt/kit', 'Importing from @nuxt kit is not allowed in your src/ directory'], // custom error message
+      ],
+    }),
+  ],
+})

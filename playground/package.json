@@ -5,6 +5,7 @@
     "dev": "node index.js"
   },
   "dependencies": {
-    "custodio": "latest"
+    "custodio": "latest",
+    "rollup": "^4.21.1"
   }
 }

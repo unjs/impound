@@ -66,6 +66,9 @@ importers:
       custodio:
         specifier: link:..
         version: link:..
+      rollup:
+        specifier: ^4.21.1
+        version: 4.21.1
 
 packages:
 
@@ -3796,11 +3799,11 @@ snapshots:
 
   '@vue/compiler-core@3.4.15':
     dependencies:
-      '@babel/parser': 7.23.6
+      '@babel/parser': 7.25.6
       '@vue/shared': 3.4.15
       entities: 4.5.0
       estree-walker: 2.0.2
-      source-map-js: 1.0.2
+      source-map-js: 1.2.0
 
   '@vue/compiler-dom@3.4.15':
     dependencies:
@@ -3809,15 +3812,15 @@ snapshots:
 
   '@vue/compiler-sfc@3.4.15':
     dependencies:
-      '@babel/parser': 7.23.6
+      '@babel/parser': 7.25.6
       '@vue/compiler-core': 3.4.15
       '@vue/compiler-dom': 3.4.15
       '@vue/compiler-ssr': 3.4.15
       '@vue/shared': 3.4.15
       estree-walker: 2.0.2
-      magic-string: 0.30.5
-      postcss: 8.4.33
-      source-map-js: 1.0.2
+      magic-string: 0.30.11
+      postcss: 8.4.41
+      source-map-js: 1.2.0
 
   '@vue/compiler-ssr@3.4.15':
     dependencies:

@@ -5,7 +5,7 @@
 [![Github Actions][github-actions-src]][github-actions-href]
 [![Codecov][codecov-src]][codecov-href]
 
-> Package description
+> Builder-agnostic plugin to allow restricting import patterns in certain parts of your code-base.
 
 ## Usage
 
@@ -14,20 +14,32 @@ Install package:
 ```sh
 # npm
 npm install custodio
-
-# pnpm
-pnpm install custodio
 ```
 
 ```js
-import {} from 'custodio'
+import { dirname } from 'node:path'
+import { CustodioPlugin } from 'custodio'
+
+const build = await rollup({
+  input: 'entry.js',
+  plugins: [
+    CustodioPlugin.rollup({
+      cwd: dirname(import.meta.url),
+      include: [/src\/*/],
+      patterns: [
+        [/^node:.*/], // disallows all node imports
+        ['@nuxt/kit', 'Importing from @nuxt kit is not allowed in your src/ directory'] // custom error message
+      ]
+    }),
+  ],
+})
 ```
 
 ## 🚧 TODO
 
-- [ ] add docs
-- [ ] update playground
-- [ ] push to GitHub
+- [x] add docs
+- [x] update playground
+- [x] push to GitHub
 - [ ] migrate to `unjs/`
 
 ## 💻 Development
