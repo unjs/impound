@@ -5,7 +5,7 @@
 [![Github Actions][github-actions-src]][github-actions-href]
 [![Codecov][codecov-src]][codecov-href]
 
-> Builder-agnostic plugin to allow restricting import patterns in certain parts of your code-base.
+> Build plugin to restrict import patterns in certain parts of your code-base.
 
 This package is an [unplugin](https://unplugin.unjs.io/) which provides support for a wide range of bundlers.
 
@@ -21,12 +21,13 @@ npm install impound
 ```js
 // rollup.config.js
 import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ImpoundPlugin } from 'impound'
 
 export default {
   plugins: [
     ImpoundPlugin.rollup({
-      cwd: dirname(import.meta.url),
+      cwd: dirname(fileURLToPath(import.meta.url)),
       include: [/src\/*/],
       patterns: [
         [/^node:.*/], // disallows all node imports

@@ -1,4 +1,5 @@
 import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ImpoundPlugin } from 'impound'
 import { rollup } from 'rollup'
 
@@ -6,7 +7,7 @@ await rollup({
   input: 'src/index.js',
   plugins: [
     ImpoundPlugin.rollup({
-      cwd: dirname(import.meta.url),
+      cwd: dirname(fileURLToPath(import.meta.url)),
       include: [/src\/*/],
       patterns: [
         [/^node:.*/], // disallows all node imports
