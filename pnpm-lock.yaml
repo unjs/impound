@@ -12,7 +12,7 @@ importers:
   .:
     dependencies:
       '@rollup/pluginutils':
-        specifier: ^5.1.0
+        specifier: ^5.1.2
         version: 5.1.2(rollup@4.23.0)
       mlly:
         specifier: ^1.7.1
@@ -24,44 +24,44 @@ importers:
         specifier: ^1.10.0
         version: 1.10.0
       unplugin:
-        specifier: ^1.12.2
+        specifier: ^1.14.1
         version: 1.14.1
     devDependencies:
       '@antfu/eslint-config':
-        specifier: latest
+        specifier: 3.7.3
         version: 3.7.3(@typescript-eslint/utils@8.8.0(eslint@9.11.1(jiti@2.0.0))(typescript@5.6.2))(@vue/compiler-sfc@3.5.10)(eslint@9.11.1(jiti@2.0.0))(typescript@5.6.2)(vitest@2.1.1(@types/node@22.7.4))
       '@types/node':
         specifier: ^22.7.4
         version: 22.7.4
       '@vitest/coverage-v8':
-        specifier: latest
+        specifier: 2.1.1
         version: 2.1.1(vitest@2.1.1(@types/node@22.7.4))
       bumpp:
-        specifier: latest
+        specifier: 9.6.1
         version: 9.6.1(magicast@0.3.5)
       eslint:
-        specifier: latest
+        specifier: 9.11.1
         version: 9.11.1(jiti@2.0.0)
       lint-staged:
-        specifier: latest
+        specifier: 15.2.10
         version: 15.2.10
       rollup:
-        specifier: ^4.21.1
+        specifier: ^4.23.0
         version: 4.23.0
       simple-git-hooks:
-        specifier: latest
+        specifier: 2.11.1
         version: 2.11.1
       typescript:
-        specifier: latest
+        specifier: 5.6.2
         version: 5.6.2
       unbuild:
-        specifier: latest
+        specifier: 2.0.0
         version: 2.0.0(typescript@5.6.2)
       vite:
-        specifier: latest
+        specifier: 5.4.8
         version: 5.4.8(@types/node@22.7.4)
       vitest:
-        specifier: latest
+        specifier: 2.1.1
         version: 2.1.1(@types/node@22.7.4)
 
   playground:
@@ -70,7 +70,7 @@ importers:
         specifier: link:..
         version: link:..
       rollup:
-        specifier: ^4.21.1
+        specifier: ^4.23.0
         version: 4.23.0
 
 packages:
