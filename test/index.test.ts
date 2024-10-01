@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import { rollup } from 'rollup'
 import type { RollupError } from 'rollup'
-import { ImpoundPlugin } from '../src'
 import type { ImpoundOptions } from '../src'
+import { rollup } from 'rollup'
+import { describe, expect, it } from 'vitest'
+import { ImpoundPlugin } from '../src'
 
 describe('impound plugin', () => {
   const code = (id: string) => `import thing from "${id}";console.log(thing)`

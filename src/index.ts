@@ -1,7 +1,7 @@
-import { createUnplugin } from 'unplugin'
+import { createFilter } from '@rollup/pluginutils'
 import { resolvePath } from 'mlly'
 import { isAbsolute, join, relative } from 'pathe'
-import { createFilter } from '@rollup/pluginutils'
+import { createUnplugin } from 'unplugin'
 
 export interface ImpoundOptions {
   /** An array of patterns of importers to apply the import protection rules to. */
