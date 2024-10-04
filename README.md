@@ -56,7 +56,7 @@ Published under [MIT License](./LICENCE).
 [npm-version-src]: https://img.shields.io/npm/v/impound?style=flat-square
 [npm-version-href]: https://npmjs.com/package/impound
 [npm-downloads-src]: https://img.shields.io/npm/dm/impound?style=flat-square
-[npm-downloads-href]: https://npmjs.com/package/impound
+[npm-downloads-href]: https://npm.chart.dev/impound
 [github-actions-src]: https://img.shields.io/github/actions/workflow/status/unjs/impound/ci.yml?branch=main&style=flat-square
 [github-actions-href]: https://github.com/unjs/impound/actions?query=workflow%3Aci
 [codecov-src]: https://img.shields.io/codecov/c/gh/unjs/impound/main?style=flat-square
