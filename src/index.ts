@@ -21,7 +21,7 @@ export interface ImpoundOptions {
 const RELATIVE_IMPORT_RE = /^\.\.?\//
 
 export const ImpoundPlugin = createUnplugin((options: ImpoundOptions) => {
-  const filter = createFilter(options.include, options.exclude)
+  const filter = createFilter(options.include, options.exclude, { resolve: options.cwd })
   const proxy = resolvePath('unenv/runtime/mock/proxy', { url: import.meta.url })
 
   return {
