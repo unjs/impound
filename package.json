@@ -2,7 +2,7 @@
   "name": "impound",
   "type": "module",
   "version": "0.2.0",
-  "packageManager": "pnpm@9.12.1",
+  "packageManager": "pnpm@9.12.2",
   "description": "Builder-agnostic plugin to allow restricting import patterns in certain parts of your code-base.",
   "license": "MIT",
   "repository": "unjs/impound",
@@ -36,8 +36,8 @@
     "unplugin": "^1.14.1"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "3.7.3",
-    "@types/node": "22.7.5",
+    "@antfu/eslint-config": "3.8.0",
+    "@types/node": "22.7.9",
     "@vitest/coverage-v8": "2.1.3",
     "bumpp": "9.7.1",
     "eslint": "9.12.0",
