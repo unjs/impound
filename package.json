@@ -33,7 +33,7 @@
     "mlly": "^1.7.2",
     "pathe": "^1.1.2",
     "unenv": "^1.10.0",
-    "unplugin": "^1.14.1"
+    "unplugin": "^2.0.0"
   },
   "devDependencies": {
     "@antfu/eslint-config": "3.11.2",
