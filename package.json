@@ -42,7 +42,7 @@
     "bumpp": "9.8.1",
     "eslint": "9.16.0",
     "lint-staged": "15.2.10",
-    "rollup": "4.28.0",
+    "rollup": "4.28.1",
     "simple-git-hooks": "2.11.1",
     "typescript": "5.7.2",
     "unbuild": "2.0.0",
