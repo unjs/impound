@@ -31,7 +31,7 @@
   "dependencies": {
     "@rollup/pluginutils": "^5.1.2",
     "mlly": "^1.7.2",
-    "pathe": "^1.1.2",
+    "pathe": "^2.0.0",
     "unenv": "^1.10.0",
     "unplugin": "^2.0.0"
   },
