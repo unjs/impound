@@ -32,7 +32,7 @@
     "@rollup/pluginutils": "^5.1.4",
     "mlly": "^1.7.4",
     "pathe": "^2.0.3",
-    "unenv": "^1.10.0",
+    "unenv": "^2.0.0-rc.12",
     "unplugin": "^2.2.0"
   },
   "devDependencies": {
