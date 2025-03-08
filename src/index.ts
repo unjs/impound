@@ -22,7 +22,7 @@ const RELATIVE_IMPORT_RE = /^\.\.?\//
 
 export const ImpoundPlugin = createUnplugin((options: ImpoundOptions) => {
   const filter = createFilter(options.include, options.exclude, { resolve: options.cwd })
-  const proxy = resolvePath('unenv/mock/proxy', { url: import.meta.url })
+  const proxy = resolvePath('mocked-exports/proxy', { url: import.meta.url })
 
   return {
     name: 'impound',

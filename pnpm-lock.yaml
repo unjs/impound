@@ -17,12 +17,12 @@ importers:
       mlly:
         specifier: ^1.7.4
         version: 1.7.4
+      mocked-exports:
+        specifier: ^0.1.0
+        version: 0.1.0
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
-      unenv:
-        specifier: ^2.0.0-rc.12
-        version: 2.0.0-rc.12
       unplugin:
         specifier: ^2.2.0
         version: 2.2.0
@@ -2044,6 +2044,9 @@ packages:
   mlly@1.7.4:
     resolution: {integrity: sha512-qmdSIPC4bDJXgZTCR7XosJiNKySV7O215tsPtDN9iEO/7q/76b/ijtgRu/+epFXSJhijtTCCGp3DWS549P3xKw==}
 
+  mocked-exports@0.1.0:
+    resolution: {integrity: sha512-sD6J0bqR2L9OPz0Tmkb2iVFTft8u1VigiAb5vKC9wVk5Fmp70wkpnOYHIww4icXD5mn/kGW7q/kQN3VEOPL8QQ==}
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -2087,9 +2090,6 @@ packages:
 
   ohash@1.1.4:
     resolution: {integrity: sha512-FlDryZAahJmEF3VR3w1KogSEdWX3WhA5GPakFx4J81kEAiHyLMpdLLElS8n8dfNadMgAne/MywcvmogzscVt4g==}
-
-  ohash@2.0.11:
-    resolution: {integrity: sha512-RdR9FQrFwNBNXAr4GixM8YaRZRJ5PUWbKYbE5eOsrwAjJW0q2REGcf79oYPsLyskQCZG1PLN+S/K1V00joZAoQ==}
 
   onetime@6.0.0:
     resolution: {integrity: sha512-1FlR+gjXK7X+AsAHso35MnyN5KqGwJRi/31ft6x0M194ht7S+rWAvd7PHss9xSKMzE0asv1pyIHaJYq+BbacAQ==}
@@ -2682,9 +2682,6 @@ packages:
 
   undici-types@6.20.0:
     resolution: {integrity: sha512-Ny6QZ2Nju20vw1SRHe3d9jVu6gJ+4e3+MMpqu7pqE5HT6WsTSlce++GQmK5UXS8mzV8DSYHrQH+Xrf2jVcuKNg==}
-
-  unenv@2.0.0-rc.12:
-    resolution: {integrity: sha512-aygmJLhrEnuLKDCISMoOL7ceRJeksnvXJXvtEvFei4zoOXQfvQkUGhZe8u//iK5C++M4pq3CsMbhVjFmWvOlmA==}
 
   unicorn-magic@0.1.0:
     resolution: {integrity: sha512-lRfVq8fE8gz6QMBuDM6a+LO3IAzTi05H6gCVaUpir2E1Rwpo4ZUog45KpNXKC/Mn3Yb9UDuHumeFTo9iV/D9FQ==}
@@ -5004,6 +5001,8 @@ snapshots:
       pkg-types: 1.3.1
       ufo: 1.5.4
 
+  mocked-exports@0.1.0: {}
+
   ms@2.1.3: {}
 
   nanoid@3.3.8: {}
@@ -5042,8 +5041,6 @@ snapshots:
       ufo: 1.5.4
 
   ohash@1.1.4: {}
-
-  ohash@2.0.11: {}
 
   onetime@6.0.0:
     dependencies:
@@ -5637,14 +5634,6 @@ snapshots:
       - vue-tsc
 
   undici-types@6.20.0: {}
-
-  unenv@2.0.0-rc.12:
-    dependencies:
-      defu: 6.1.4
-      exsolve: 1.0.1
-      ohash: 2.0.11
-      pathe: 2.0.3
-      ufo: 1.5.4
 
   unicorn-magic@0.1.0: {}
 
