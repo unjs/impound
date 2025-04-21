@@ -11,7 +11,7 @@ export interface ImpoundMatcherOptions {
   /** Whether to throw an error or not. if set to `false`, an error will be logged to console instead. */
   error?: boolean
   /** An array of patterns to prevent being imported, along with an optional warning to display.  */
-  patterns: [importPattern: string | RegExp, warning?: string][]
+  patterns: [importPattern: string | RegExp | ((id: string) => boolean | string), warning?: string][]
 }
 
 export interface ImpoundSharedOptions {
@@ -49,10 +49,15 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
 
         const logError = options.error === false ? console.error : this.error.bind(this)
         for (const [pattern, warning] of options.patterns) {
-          const usesImport = pattern instanceof RegExp ? pattern.test(id) : pattern === id
+          const usesImport = pattern instanceof RegExp
+            ? pattern.test(id)
+            : typeof pattern === 'string'
+              ? pattern === id
+              : pattern(id)
+
           if (usesImport) {
             const relativeImporter = isAbsolute(importer) && globalOptions.cwd ? relative(globalOptions.cwd, importer) : importer
-            logError(`${warning || 'Invalid import'} [importing \`${id}\` from \`${relativeImporter}\`]`)
+            logError(`${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`)
             matched = true
           }
         }
