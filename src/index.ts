@@ -1,4 +1,4 @@
-import { resolvePath } from 'mlly'
+import { resolveModulePath } from 'exsolve'
 import { isAbsolute, join, relative } from 'pathe'
 import { createUnplugin } from 'unplugin'
 import { createFilter } from 'unplugin-utils'
@@ -27,7 +27,7 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
 
   return matchers.map((options) => {
     const filter = createFilter(options.include, options.exclude, { resolve: globalOptions.cwd })
-    const proxy = resolvePath('mocked-exports/proxy', { url: import.meta.url })
+    const proxy = resolveModulePath('mocked-exports/proxy', { from: import.meta.url })
 
     return {
       name: 'impound',
