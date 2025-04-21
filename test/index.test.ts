@@ -1,7 +1,7 @@
 import type { RollupError } from 'rollup'
 import type { ImpoundOptions } from '../src'
 import { rollup } from 'rollup'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ImpoundPlugin } from '../src'
 
 describe('impound plugin', () => {
@@ -20,6 +20,24 @@ describe('impound plugin', () => {
   it('should handle absolute paths', async () => {
     const result = await process(code('/root/bar.js'), { cwd: '/root', patterns: [['bar.js']] }) as RollupError
     expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
+  })
+
+  it('should handle absolutely resolved importers', async () => {
+    const result = await process(code('/root/bar.js'), { cwd: '/root', patterns: [['bar.js']] }, '/root/entry.js') as RollupError
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
+  })
+
+  it('should handle RegExp patterns', async () => {
+    const result = await process(code('baar'), { patterns: [[/ba.r/]] }) as RollupError
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`baar\` from \`entry.js\`]"`)
+  })
+
+  it('should handle error: false', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await process(code('bar'), { patterns: [['bar']], error: false }) as RollupError
+    expect(result.message).toBeUndefined()
+    expect(errorSpy).toHaveBeenCalledWith('Invalid import [importing `bar` from `entry.js`]')
+    errorSpy.mockRestore()
   })
 
   it('supports using matchers array syntax', async () => {
@@ -47,18 +65,18 @@ describe('impound plugin', () => {
   })
 })
 
-async function process(code: string, opts: ImpoundOptions) {
+async function process(code: string, opts: ImpoundOptions, importer = 'entry.js') {
   const libs = ['foo', 'bar']
 
   try {
     const build = await rollup({
-      input: 'entry.js',
+      input: importer,
       plugins: [
         ImpoundPlugin.rollup(opts),
         {
           name: 'entry',
-          load: id => id === 'entry.js' ? code : undefined,
-          resolveId: id => id === 'entry.js' ? id : undefined,
+          load: id => id === importer ? code : undefined,
+          resolveId: id => id === importer ? id : undefined,
         },
         {
           name: 'lib-load',

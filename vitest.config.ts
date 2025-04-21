@@ -11,6 +11,9 @@ export default defineConfig({
   },
   test: {
     coverage: {
+      thresholds: {
+        100: true,
+      },
       include: ['src'],
       reporter: ['text', 'json', 'html'],
     },
