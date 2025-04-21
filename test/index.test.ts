@@ -22,6 +22,16 @@ describe('impound plugin', () => {
     expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar.js\` from \`entry.js\`]"`)
   })
 
+  it('supports using matchers array syntax', async () => {
+    const result = await process(code('bar'), {
+      matchers: [
+        { patterns: [['foo']] }, // This matcher shouldn't apply to 'bar'
+        { patterns: [['bar', 'Using the matchers array syntax']] }, // This should match
+      ],
+    }) as RollupError
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Using the matchers array syntax [importing \`bar\` from \`entry.js\`]"`)
+  })
+
   it(`doesn't apply rule to excluded files`, async () => {
     const result = await process(code('bar'), { patterns: [['foo']] })
     expect(result).toMatchInlineSnapshot(`
