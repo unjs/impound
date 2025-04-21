@@ -31,9 +31,9 @@
   "dependencies": {
     "@rollup/pluginutils": "^5.1.4",
     "mlly": "^1.7.4",
-    "mocked-exports": "^0.1.0",
+    "mocked-exports": "^0.1.1",
     "pathe": "^2.0.3",
-    "unplugin": "^2.2.0"
+    "unplugin": "^2.3.2"
   },
   "devDependencies": {
     "@antfu/eslint-config": "4.12.0",

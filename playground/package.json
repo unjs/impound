@@ -6,6 +6,6 @@
   },
   "dependencies": {
     "impound": "latest",
-    "rollup": "^4.35.0"
+    "rollup": "^4.40.0"
   }
 }
