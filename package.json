@@ -38,7 +38,7 @@
   "devDependencies": {
     "@antfu/eslint-config": "6.7.3",
     "@types/node": "24.10.7",
-    "@vitest/coverage-v8": "4.0.16",
+    "@vitest/coverage-v8": "4.0.17",
     "bumpp": "10.3.2",
     "eslint": "9.39.2",
     "lint-staged": "16.2.7",
@@ -47,7 +47,7 @@
     "typescript": "5.9.3",
     "unbuild": "3.6.1",
     "vite": "7.3.1",
-    "vitest": "4.0.16"
+    "vitest": "4.0.17"
   },
   "resolutions": {
     "impound": "link:."
