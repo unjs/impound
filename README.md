@@ -54,7 +54,7 @@ Published under [MIT License](./LICENCE).
 <!-- Badges -->
 
 [npm-version-src]: https://img.shields.io/npm/v/impound?style=flat-square
-[npm-version-href]: https://npmjs.com/package/impound
+[npm-version-href]: https://npmx.dev/package/impound
 [npm-downloads-src]: https://img.shields.io/npm/dm/impound?style=flat-square
 [npm-downloads-href]: https://npm.chart.dev/impound
 [github-actions-src]: https://img.shields.io/github/actions/workflow/status/unjs/impound/ci.yml?branch=main&style=flat-square
