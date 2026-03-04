@@ -8,16 +8,16 @@
   "repository": "unjs/impound",
   "sideEffects": false,
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.mjs"
   },
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "unbuild",
+    "build": "tsdown",
     "dev": "vitest dev",
     "lint": "eslint . --fix",
     "prepare": "simple-git-hooks",
@@ -41,11 +41,11 @@
     "@vitest/coverage-v8": "4.0.18",
     "bumpp": "10.4.1",
     "eslint": "10.0.2",
-    "lint-staged": "16.3.2",
+    "nano-staged": "^0.9.0",
     "rollup": "4.59.0",
     "simple-git-hooks": "2.13.1",
+    "tsdown": "^0.20.3",
     "typescript": "5.9.3",
-    "unbuild": "3.6.1",
     "vite": "7.3.1",
     "vitest": "4.0.18"
   },
@@ -53,11 +53,9 @@
     "impound": "link:."
   },
   "simple-git-hooks": {
-    "pre-commit": "npx lint-staged"
+    "pre-commit": "pnpm exec nano-staged"
   },
-  "lint-staged": {
-    "*.{js,ts,mjs,cjs,json,.*rc}": [
-      "npx eslint --fix"
-    ]
+  "nano-staged": {
+    "*.{js,ts,mjs,cjs,json,.*rc}": "pnpm exec eslint --fix"
   }
 }
