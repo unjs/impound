@@ -56,6 +56,22 @@ describe('impound plugin', () => {
     errorSpy.mockRestore()
   })
 
+  it('deduplicates warnings by default (warn: once)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Two patterns that both match 'bar' — same message would be logged twice without dedup
+    await process(code('bar'), { patterns: [['bar'], [/^bar$/]], error: false })
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    errorSpy.mockRestore()
+  })
+
+  it('logs all warnings when warn is set to always', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Two patterns that both match 'bar' — both log without dedup
+    await process(code('bar'), { patterns: [['bar'], [/^bar$/]], error: false, warn: 'always' })
+    expect(errorSpy).toHaveBeenCalledTimes(2)
+    errorSpy.mockRestore()
+  })
+
   it('supports using matchers array syntax', async () => {
     const result = await process(code('bar'), {
       matchers: [

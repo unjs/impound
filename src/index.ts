@@ -10,6 +10,14 @@ export interface ImpoundMatcherOptions {
   exclude?: Array<string | RegExp>
   /** Whether to throw an error or not. if set to `false`, an error will be logged to console instead. */
   error?: boolean
+  /**
+   * Controls whether duplicate warnings are logged when `error` is `false`.
+   * - `'once'` (default): each unique violation is logged only once.
+   * - `'always'`: every violation is logged, even if repeated.
+   *
+   * This has no effect when `error` is `true` (the default), since the build fails on the first violation.
+   */
+  warn?: 'once' | 'always'
   /** An array of patterns to prevent being imported, along with an optional warning to display.  */
   patterns: [importPattern: string | RegExp | ((id: string, importer: string) => boolean | string), warning?: string][]
 }
@@ -28,6 +36,7 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
   return matchers.map((options) => {
     const filter = createFilter(options.include, options.exclude, { resolve: globalOptions.cwd })
     const proxy = resolveModulePath('mocked-exports/proxy', { from: import.meta.url })
+    const warnedMessages = options.warn !== 'always' ? new Set<string>() : undefined
 
     return {
       name: 'impound',
@@ -57,7 +66,11 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
               : pattern(id, relativeImporter)
 
           if (usesImport) {
-            logError(`${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`)
+            const message = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`
+            if (!warnedMessages || !warnedMessages.has(message)) {
+              warnedMessages?.add(message)
+              logError(message)
+            }
             matched = true
           }
         }
