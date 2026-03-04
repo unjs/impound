@@ -3,6 +3,15 @@ import { isAbsolute, join, relative } from 'pathe'
 import { createUnplugin } from 'unplugin'
 import { createFilter } from 'unplugin-utils'
 
+export interface ImpoundViolationInfo {
+  /** The resolved import specifier that was denied. */
+  id: string
+  /** The file that contains the denied import. */
+  importer: string
+  /** The formatted error message. */
+  message: string
+}
+
 export interface ImpoundMatcherOptions {
   /** An array of patterns of importers to apply the import protection rules to. */
   include?: Array<string | RegExp>
@@ -18,6 +27,11 @@ export interface ImpoundMatcherOptions {
    * This has no effect when `error` is `true` (the default), since the build fails on the first violation.
    */
   warn?: 'once' | 'always'
+  /**
+   * Callback invoked on every violation. Receives the violation details.
+   * Return `false` to allow the import and suppress the default error/warning.
+   */
+  onViolation?: (info: ImpoundViolationInfo) => boolean | void
   /** An array of patterns to prevent being imported, along with an optional warning to display.  */
   patterns: [importPattern: string | RegExp | ((id: string, importer: string) => boolean | string), warning?: string][]
 }
@@ -67,6 +81,9 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
 
           if (usesImport) {
             const message = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`
+            if (options.onViolation?.({ id, importer: relativeImporter, message }) === false) {
+              continue
+            }
             if (!warnedMessages || !warnedMessages.has(message)) {
               warnedMessages?.add(message)
               logError(message)

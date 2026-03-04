@@ -91,6 +91,29 @@ describe('impound plugin', () => {
     `)
   })
 
+  it('calls onViolation callback with violation info', async () => {
+    const onViolation = vi.fn()
+    const result = await process(code('bar'), { patterns: [['bar']], onViolation }) as RollupError
+    expect(onViolation).toHaveBeenCalledWith({
+      id: 'bar',
+      importer: 'entry.js',
+      message: 'Invalid import [importing `bar` from `entry.js`]',
+    })
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar\` from \`entry.js\`]"`)
+  })
+
+  it('allows import when onViolation returns false', async () => {
+    const result = await process(code('bar'), {
+      patterns: [['bar']],
+      onViolation: () => false,
+    })
+    expect(result).toMatchInlineSnapshot(`
+      "var thing = "loaded";
+
+      console.log(thing);"
+    `)
+  })
+
   it('provides a helpful error message when importing a disallowed pattern', async () => {
     const result = await process(code('bar'), { patterns: [['bar', '"bar" is a dangerous library and should never be used.']] }) as RollupError
     expect(result.message).toMatchInlineSnapshot(`"[plugin impound] "bar" is a dangerous library and should never be used. [importing \`bar\` from \`entry.js\`]"`)
