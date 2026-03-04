@@ -31,7 +31,8 @@ export default {
       include: [/src\/*/],
       patterns: [
         [/^node:.*/], // disallows all node imports
-        ['@nuxt/kit', 'Importing from @nuxt kit is not allowed in your src/ directory'] // custom error message
+        ['@nuxt/kit', 'Importing from @nuxt/kit is not allowed in your src/ directory'], // custom error message
+        [(id, importer) => id.endsWith('.server') && `Server-only import in ${importer}`] // functional pattern with importer context
       ]
     }),
   ],

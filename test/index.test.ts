@@ -40,6 +40,14 @@ describe('impound plugin', () => {
     expect(result2.message).toMatchInlineSnapshot(`"[plugin impound] boo! [importing \`bar\` from \`entry.js\`]"`)
   })
 
+  it('should pass importer to functional patterns', async () => {
+    const result = await process(code('bar'), { patterns: [[(id, importer) => importer === 'entry.js' && id === 'bar']] }) as RollupError
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar\` from \`entry.js\`]"`)
+
+    const result2 = await process(code('bar'), { patterns: [[(id, importer) => `${id} is not allowed in ${importer}`]] }) as RollupError
+    expect(result2.message).toMatchInlineSnapshot(`"[plugin impound] bar is not allowed in entry.js [importing \`bar\` from \`entry.js\`]"`)
+  })
+
   it('should handle error: false', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = await process(code('bar'), { patterns: [['bar']], error: false }) as RollupError
