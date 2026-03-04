@@ -46,6 +46,10 @@ export default {
 - Install dependencies using `pnpm install`
 - Run interactive tests using `pnpm dev`
 
+## Acknowledgements
+
+Some features in impound were inspired by [TanStack Start's import protection](https://tanstack.com/start/latest/docs/framework/react/guide/import-protection).
+
 ## License
 
 Made with ❤️

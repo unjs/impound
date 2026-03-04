@@ -32,8 +32,8 @@ export interface ImpoundMatcherOptions {
    * Return `false` to allow the import and suppress the default error/warning.
    */
   onViolation?: (info: ImpoundViolationInfo) => boolean | void
-  /** An array of patterns to prevent being imported, along with an optional warning to display.  */
-  patterns: [importPattern: string | RegExp | ((id: string, importer: string) => boolean | string), warning?: string][]
+  /** An array of patterns to prevent being imported, along with an optional warning and suggestions to display.  */
+  patterns: [importPattern: string | RegExp | ((id: string, importer: string) => boolean | string), warning?: string, suggestions?: string[]][]
 }
 
 export interface ImpoundSharedOptions {
@@ -72,7 +72,7 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
 
         const relativeImporter = isAbsolute(importer) && globalOptions.cwd ? relative(globalOptions.cwd, importer) : importer
         const logError = options.error === false ? console.error : this.error.bind(this)
-        for (const [pattern, warning] of options.patterns) {
+        for (const [pattern, warning, suggestions] of options.patterns) {
           const usesImport = pattern instanceof RegExp
             ? pattern.test(id)
             : typeof pattern === 'string'
@@ -80,7 +80,10 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
               : pattern(id, relativeImporter)
 
           if (usesImport) {
-            const message = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`
+            let message = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`
+            if (suggestions?.length) {
+              message += `\n\nSuggestions:\n${suggestions.map(s => `  - ${s}`).join('\n')}`
+            }
             if (options.onViolation?.({ id, importer: relativeImporter, message }) === false) {
               continue
             }

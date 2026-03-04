@@ -118,6 +118,19 @@ describe('impound plugin', () => {
     const result = await process(code('bar'), { patterns: [['bar', '"bar" is a dangerous library and should never be used.']] }) as RollupError
     expect(result.message).toMatchInlineSnapshot(`"[plugin impound] "bar" is a dangerous library and should never be used. [importing \`bar\` from \`entry.js\`]"`)
   })
+
+  it('appends suggestions to error message', async () => {
+    const result = await process(code('bar'), {
+      patterns: [['bar', 'Server-only import', ['Use a server function instead', 'Move this import to a .server.ts file']]],
+    }) as RollupError
+    expect(result.message).toMatchInlineSnapshot(`
+      "[plugin impound] Server-only import [importing \`bar\` from \`entry.js\`]
+
+      Suggestions:
+        - Use a server function instead
+        - Move this import to a .server.ts file"
+    `)
+  })
 })
 
 async function process(code: string, opts: ImpoundOptions, importer = 'entry.js') {
