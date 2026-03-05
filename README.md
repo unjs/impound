@@ -94,9 +94,9 @@ Published under [MIT License](./LICENCE).
 
 <!-- Badges -->
 
-[npm-version-src]: https://img.shields.io/npm/v/impound?style=flat-square
+[npm-version-src]: https://npmx.dev/api/registry/badge/version/impound
 [npm-version-href]: https://npmx.dev/package/impound
-[npm-downloads-src]: https://img.shields.io/npm/dm/impound?style=flat-square
+[npm-downloads-src]: https://npmx.dev/api/registry/badge/downloads/impound
 [npm-downloads-href]: https://npm.chart.dev/impound
 [github-actions-src]: https://img.shields.io/github/actions/workflow/status/unjs/impound/ci.yml?branch=main&style=flat-square
 [github-actions-href]: https://github.com/unjs/impound/actions?query=workflow%3Aci
