@@ -58,6 +58,11 @@ export interface ImpoundMatcherOptions {
    * Return `false` to allow the import and suppress the default error/warning.
    */
   onViolation?: (info: ImpoundViolationInfo) => boolean | void
+  /**
+   * An array of patterns matching resolved import targets that should be excluded from pattern checks.
+   * Useful for skipping false positives from third-party packages, e.g. node_modules.
+   */
+  excludeFiles?: Array<string | RegExp>
   /** An array of patterns to prevent being imported, along with an optional warning and suggestions to display.  */
   patterns: [importPattern: string | RegExp | ((id: string, importer: string) => boolean | string), warning?: string, suggestions?: string[]][]
 }
@@ -249,6 +254,9 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
 
   const plugins = matchers.map((options) => {
     const filter = createFilter(options.include, options.exclude, { resolve: globalOptions.cwd })
+    const excludeFilter = options.excludeFiles?.length
+      ? createFilter(options.excludeFiles, undefined, { resolve: globalOptions.cwd })
+      : undefined
     const proxy = resolveModulePath('mocked-exports/proxy', { from: import.meta.url })
     const warnedMessages = options.warn !== 'always' ? new Set<string>() : undefined
 
@@ -272,6 +280,11 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
 
         if (RELATIVE_IMPORT_RE.test(id)) {
           id = join(importer, '..', id)
+        }
+
+        // Skip resolved targets matching excludeFiles
+        if (excludeFilter?.(id)) {
+          return
         }
 
         if (isAbsolute(id) && globalOptions.cwd) {

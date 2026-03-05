@@ -131,6 +131,26 @@ describe('impound plugin', () => {
         - Move this import to a .server.ts file"
     `)
   })
+
+  it('skips pattern checks for imports matching excludeFiles', async () => {
+    const result = await process(code('bar'), {
+      patterns: [[/^bar$/]],
+      excludeFiles: [/^bar$/],
+    })
+    expect(result).toMatchInlineSnapshot(`
+      "var thing = "loaded";
+
+      console.log(thing);"
+    `)
+  })
+
+  it('still applies patterns to imports not matching excludeFiles', async () => {
+    const result = await process(code('bar'), {
+      patterns: [[/^bar$/]],
+      excludeFiles: [/^foo$/],
+    }) as RollupError
+    expect(result.message).toMatchInlineSnapshot(`"[plugin impound] Invalid import [importing \`bar\` from \`entry.js\`]"`)
+  })
 })
 
 describe('trace mode', () => {
