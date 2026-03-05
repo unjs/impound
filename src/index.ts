@@ -290,15 +290,29 @@ function enrichAndReport(
   // Build trace
   const trace = buildTrace(importer, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd)
 
-  // Build snippet — try multiple key forms for the importer since resolveId
-  // and transform may use different path formats (relative vs absolute, with/without query)
+  // Build snippet from the module graph (entries are stored under normalized key forms in transform)
   let snippet: ImpoundSnippet | undefined
-  const importerBare = importer.split('?')[0]!
-  const importerAbs = cwd && !isAbsolute(importer) ? join(cwd, importer) : importer
-  const importerAbsBare = importerAbs.split('?')[0]!
-  const importerEntry = moduleGraph.get(importer) || moduleGraph.get(importerBare) || moduleGraph.get(importerAbs) || moduleGraph.get(importerAbsBare)
+  /* v8 ignore start -- always defined: enrichAndReport is only called when the importer is in the module graph */
+  const importerEntry = moduleGraph.get(importer)
   if (importerEntry) {
-    const loc = importerEntry.imports.get(rawId)
+  /* v8 ignore stop */
+    // Try exact rawId first, then fall back to searching for a matching specifier.
+    // rawId may differ from the source specifier when bundlers pre-resolve imports.
+    let loc = importerEntry.imports.get(rawId)
+    if (!loc) {
+      const importerBase = importer.split('?')[0]!
+      for (const [specifier, specLoc] of importerEntry.imports) {
+        const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(importerBase, '..', specifier) : specifier
+        let normalizedResolved = resolved
+        if (cwd && isAbsolute(resolved)) {
+          normalizedResolved = relative(cwd, resolved)
+        }
+        if (normalizedResolved === id || resolved === rawId || specifier.endsWith(id)) {
+          loc = specLoc
+          break
+        }
+      }
+    }
     if (loc) {
       const text = generateSnippet(importerEntry.code, loc.line, loc.column)
       snippet = { text, line: loc.line, column: loc.column }
@@ -492,7 +506,22 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
               })
             }
           }
-          moduleGraph.set(id, { code, imports: importMap })
+          const graphEntry = { code, imports: importMap }
+          moduleGraph.set(id, graphEntry)
+          // Also store under normalized key forms so enrichAndReport can find it
+          // when the importer path format differs (e.g. with/without query string)
+          /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
+          const bareId = id.split('?')[0]!
+          if (bareId !== id)
+            moduleGraph.set(bareId, graphEntry)
+          if (isAbsolute(id) && globalOptions.cwd) {
+            const relId = relative(globalOptions.cwd, id)
+            moduleGraph.set(relId, graphEntry)
+            const relBareId = relId.split('?')[0]!
+            if (relBareId !== relId)
+              moduleGraph.set(relBareId, graphEntry)
+          }
+          /* v8 ignore stop */
         }
         catch {
           // If parsing fails (e.g. non-JS asset), just skip

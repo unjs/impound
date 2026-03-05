@@ -506,6 +506,91 @@ describe('trace mode (deferred violations)', () => {
     expect(result.message).toContain('entry.js')
   })
 
+  it('finds snippet via fallback when rawId differs from source specifier', async () => {
+    // Simulates frameworks like Nuxt where alias resolution rewrites import specifiers
+    // before resolveId sees them (e.g. ../server/api/test → ~~/server/api/test)
+    const plugins = ImpoundPlugin.rollup({ trace: true, cwd: '/root', patterns: [[/server\/api/, 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    // Transform with source code using a relative specifier
+    await (tracePlugin as any).transform('import api from "../server/api/test";\nconsole.log(api)', '/root/app/app.vue')
+
+    // But resolveId receives an absolute pre-resolved path (as if a bundler alias resolved it)
+    // rawId will be the absolute path, not the relative specifier from source
+    await (impoundPlugin as any).resolveId.call(context, '/root/server/api/test', '/root/app/app.vue')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Not allowed')
+    // Fallback search should find the snippet by resolving '../server/api/test' relative to importer
+    expect(errors[0]).toContain('Code:')
+    expect(errors[0]).toContain('import api from "../server/api/test"')
+    expect(errors[0]).toContain('^')
+  })
+
+  it('handles fallback when no specifier matches the resolved id', async () => {
+    // The fallback loop runs but no specifier matches — snippet remains undefined
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [[/secret/, 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    // Transform with an import that doesn't match the resolved id at all
+    await (tracePlugin as any).transform('import foo from "unrelated-module";\nexport default foo', 'middle.js')
+    // resolveId with a completely different id
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Not allowed')
+    // No Code: since no specifier in the fallback matched
+    expect(errors[0]).not.toContain('Code:')
+  })
+
+  it('finds snippet via fallback without cwd', async () => {
+    // Exercises the fallback path where cwd is undefined
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [[/server\/api/, 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    await (tracePlugin as any).transform('import api from "~~/server/api/test";\nconsole.log(api)', 'app.vue')
+    await (impoundPlugin as any).resolveId.call(context, 'server/api/test', 'app.vue')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+  })
+
+  it('finds snippet via suffix match when specifier uses aliases', async () => {
+    // When the source has an alias like ~~/server/api/test and the resolved id is server/api/test
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [[/server\/api/, 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    // Transform with aliased import
+    await (tracePlugin as any).transform('import api from "~~/server/api/test";\nconsole.log(api)', 'app.vue')
+
+    // resolveId receives the resolved form (without alias)
+    await (impoundPlugin as any).resolveId.call(context, 'server/api/test', 'app.vue')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    expect(errors[0]).toContain('~~/server/api/test')
+  })
+
   it('handles dynamic imports with non-literal specifiers in transform', async () => {
     const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
