@@ -39,6 +39,42 @@ export default {
 }
 ```
 
+### Import Tracing
+
+Enable `trace: true` to get rich violation diagnostics with full import chains and code snippets. When enabled, errors are deferred to `buildEnd` so the complete module graph can be collected first.
+
+```js
+ImpoundPlugin.rollup({
+  cwd: dirname(fileURLToPath(import.meta.url)),
+  trace: true,
+  patterns: [
+    [/\.server$/, 'Server-only import', ['Use a server function instead', 'Move this import to a .server.ts file']]
+  ]
+})
+```
+
+Example output:
+
+```
+Invalid import [importing `secret` from `middle.js`]
+
+Trace:
+  1. src/routes/index.tsx:2:34 (entry) (import "../features/auth/session")
+  2. src/features/auth/session.ts
+
+Code:
+  1 | import { logger } from '../utils/logger'
+  2 |
+> 3 | import { getUsers } from '../db/queries.server'
+    |                           ^
+  4 |
+  5 | export function loadAuth() {
+
+Suggestions:
+  - Use a server function instead
+  - Move this import to a .server.ts file
+```
+
 ## 💻 Development
 
 - Clone this repository

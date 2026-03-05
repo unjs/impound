@@ -1,5 +1,5 @@
 import type { RollupError } from 'rollup'
-import type { ImpoundOptions } from '../src'
+import type { ImpoundOptions, ImpoundViolationInfo } from '../src'
 import { rollup } from 'rollup'
 import { describe, expect, it, vi } from 'vitest'
 import { ImpoundPlugin } from '../src'
@@ -132,6 +132,107 @@ describe('impound plugin', () => {
     `)
   })
 })
+
+describe('trace mode', () => {
+  it('includes import trace in violation', async () => {
+    const result = await processTrace({
+      trace: true,
+      patterns: [['secret']],
+    }) as RollupError
+    expect(result.message).toContain('Trace:')
+    expect(result.message).toContain('entry.js')
+    expect(result.message).toContain('middle.js')
+  })
+
+  it('includes code snippet in violation', async () => {
+    const result = await processTrace({
+      trace: true,
+      patterns: [['secret']],
+    }) as RollupError
+    expect(result.message).toContain('Code:')
+    expect(result.message).toContain('import secret from "secret"')
+    expect(result.message).toContain('^')
+  })
+
+  it('includes suggestions with trace', async () => {
+    const result = await processTrace({
+      trace: true,
+      patterns: [['secret', 'Server-only import', ['Use a server function']]],
+    }) as RollupError
+    expect(result.message).toContain('Suggestions:')
+    expect(result.message).toContain('Use a server function')
+  })
+
+  it('calls onViolation with trace and snippet', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    await processTrace({
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => { violations.push(info) },
+    })
+    expect(violations).toHaveLength(1)
+    expect(violations[0]!.trace).toBeDefined()
+    expect(violations[0]!.trace!.length).toBeGreaterThanOrEqual(2)
+    expect(violations[0]!.snippet).toBeDefined()
+    expect(violations[0]!.snippet!.line).toBeGreaterThan(0)
+  })
+
+  it('allows suppressing violations via onViolation returning false', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await processTrace({
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: () => false,
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('deduplicates trace violations (warn: once)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await processTrace({
+      trace: true,
+      patterns: [['secret'], [/^secret$/]],
+      error: false,
+    })
+    // Both patterns match but produce the same base message, so only 1 after dedup
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    errorSpy.mockRestore()
+  })
+})
+
+async function processTrace(opts: ImpoundOptions) {
+  const files: Record<string, string> = {
+    'entry.js': 'import middle from "middle.js";console.log(middle)',
+    'middle.js': 'import secret from "secret";export default secret',
+  }
+  const libs = ['secret']
+
+  try {
+    const build = await rollup({
+      input: 'entry.js',
+      plugins: [
+        ImpoundPlugin.rollup(opts),
+        {
+          name: 'virtual-files',
+          load: id => files[id],
+          resolveId: id => (id in files || libs.includes(id)) ? id : undefined,
+        },
+        {
+          name: 'lib-load',
+          load: id => libs.includes(id) ? 'export default "loaded"' : undefined,
+        },
+      ],
+    })
+    const bundle = await build.generate({})
+    return bundle.output[0]?.code.trim()
+  }
+  catch (e) {
+    return e as RollupError
+  }
+}
 
 async function process(code: string, opts: ImpoundOptions, importer = 'entry.js') {
   const libs = ['foo', 'bar']
