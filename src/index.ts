@@ -1,9 +1,36 @@
 import type { UnpluginBuildContext, UnpluginContext } from 'unplugin'
 import { init, parse } from 'es-module-lexer'
-import { resolveModulePath } from 'exsolve'
 import { isAbsolute, join, relative } from 'pathe'
 import { createUnplugin } from 'unplugin'
 import { createFilter } from 'unplugin-utils'
+
+const PROXY_ID = '\0impound:proxy'
+
+// based on https://github.com/unjs/mocked-exports
+const PROXY_CODE = `
+function createMock(name, overrides = {}) {
+  const proxyFn = function () {};
+  proxyFn.prototype.name = name;
+  const props = {};
+  const proxy = new Proxy(proxyFn, {
+    get(_target, prop) {
+      if (prop === "caller") return null;
+      if (prop === "__createMock__") return createMock;
+      if (prop === "__mock__") return true;
+      if (prop in overrides) return overrides[prop];
+      if (prop === "then") return (fn) => Promise.resolve(fn());
+      if (prop === "catch") return (_fn) => Promise.resolve();
+      if (prop === "finally") return (fn) => Promise.resolve(fn());
+      return (props[prop] = props[prop] || createMock(\`\${name}.\${prop.toString()}\`));
+    },
+    apply(_target, _this, _args) { return createMock(\`\${name}()\`); },
+    construct(_target, _args, _newT) { return createMock(\`[\${name}]\`); },
+    enumerate() { return []; },
+  });
+  return proxy;
+}
+export default createMock("mock");
+`.trim()
 
 export interface ImpoundTraceStep {
   /** The file path in this step of the import chain. */
@@ -257,13 +284,20 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
     const excludeFilter = options.excludeFiles?.length
       ? createFilter(options.excludeFiles, undefined, { resolve: globalOptions.cwd })
       : undefined
-    const proxy = resolveModulePath('mocked-exports/proxy', { from: import.meta.url })
     const warnedMessages = options.warn !== 'always' ? new Set<string>() : undefined
 
     return {
       name: 'impound',
       enforce: 'pre' as const,
+      load(id: string) {
+        if (id === PROXY_ID) {
+          return PROXY_CODE
+        }
+      },
       resolveId(this: UnpluginBuildContext & UnpluginContext, id: string, importer: string | undefined, resolveOptions?: { isEntry?: boolean }) {
+        if (id === PROXY_ID) {
+          return id
+        }
         if (!importer) {
           // This is an entry point resolution
           if (traceEnabled && resolveOptions?.isEntry) {
@@ -344,7 +378,7 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
           }
         }
 
-        return matched ? proxy : null
+        return matched ? PROXY_ID : null
       },
     }
   })
