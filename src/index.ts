@@ -98,8 +98,8 @@ export interface ImpoundSharedOptions {
   cwd?: string
   /**
    * Enable import tracing and code snippets in violation reports.
-   * When enabled, errors are deferred to `buildEnd` so the full module graph
-   * can be collected first.
+   * Violations are reported eagerly with best-effort trace enrichment
+   * from the module graph collected so far.
    */
   trace?: boolean
   /**
@@ -133,6 +133,7 @@ interface PendingViolation {
   message: string
   suggestions?: string[]
   options: ImpoundMatcherOptions
+  errorFn: (msg: string) => void
 }
 
 /** Convert a byte offset in source code to a 1-indexed line and 0-indexed column. */
@@ -175,12 +176,18 @@ function buildTrace(
   resolvedImports: Map<string, Map<string, string>>,
   entries: Set<string>,
   maxDepth: number,
+  cwd?: string,
 ): ImpoundTraceStep[] {
+  // Helper to normalize a path to its cwd-relative form for comparisons
+  const normalize = (p: string) => isAbsolute(p) && cwd ? relative(cwd, p) : p
+
   // BFS backwards from importer to find an entry point
   const visited = new Set<string>()
   // Each item in the queue: [currentModule, pathSoFar]
   const queue: [string, string[]][] = [[importer, [importer]]]
   visited.add(importer)
+
+  const isEntry = (id: string) => entries.has(id) || entries.has(normalize(id))
 
   let bestPath: string[] = [importer]
 
@@ -189,12 +196,13 @@ function buildTrace(
     if (path.length > maxDepth)
       continue
 
-    if (entries.has(current)) {
+    if (isEntry(current)) {
       bestPath = path
       break
     }
 
     // Find importers of `current`
+    const normalizedCurrent = normalize(current)
     for (const [moduleId] of moduleGraph) {
       if (visited.has(moduleId))
         continue
@@ -202,10 +210,10 @@ function buildTrace(
       const resolvedForModule = resolvedImports.get(moduleId)
       if (resolvedForModule) {
         for (const [, resolvedId] of resolvedForModule) {
-          if (resolvedId === current) {
+          if (resolvedId === current || resolvedId === normalizedCurrent) {
             visited.add(moduleId)
             const newPath = [...path, moduleId]
-            if (entries.has(moduleId)) {
+            if (isEntry(moduleId)) {
               bestPath = newPath
               queue.length = 0 // break outer loop
               break
@@ -234,19 +242,20 @@ function buildTrace(
     if (i < bestPath.length - 1) {
       // Find what specifier this file uses to import the next file
       const nextFile = bestPath[i + 1]!
+      /* v8 ignore start -- BFS only builds paths through nodes with resolvedImports, so this is always defined */
       const resolvedForFile = resolvedImports.get(file)
-      const graphEntry = moduleGraph.get(file)
-      if (resolvedForFile && graphEntry) {
-        for (const [specifier, resolvedId] of resolvedForFile) {
-          if (resolvedId === nextFile) {
-            step.import = specifier
-            const loc = graphEntry.imports.get(specifier)
-            if (loc) {
-              step.line = loc.line
-              step.column = loc.column
-            }
-            break
+      if (!resolvedForFile)
+        continue
+      /* v8 ignore stop */
+      for (const [specifier, resolvedId] of resolvedForFile) {
+        if (resolvedId === nextFile) {
+          step.import = specifier
+          const loc = moduleGraph.get(file)?.imports.get(specifier)
+          if (loc) {
+            step.line = loc.line
+            step.column = loc.column
           }
+          break
         }
       }
     }
@@ -260,11 +269,68 @@ function buildTrace(
 function formatTrace(trace: ImpoundTraceStep[], cwd?: string): string {
   return trace.map((step, i) => {
     const file = cwd && isAbsolute(step.file) ? relative(cwd, step.file) : step.file
-    const loc = step.line != null ? `:${step.line}:${step.column ?? 0}` : ''
+    const loc = step.line != null ? `:${step.line}:${step.column}` : ''
     const entry = i === 0 ? ' (entry)' : ''
     const imp = step.import ? ` (import "${step.import}")` : ''
     return `  ${i + 1}. ${file}${loc}${entry}${imp}`
   }).join('\n')
+}
+
+function enrichAndReport(
+  violation: PendingViolation,
+  moduleGraph: Map<string, ModuleGraphEntry>,
+  resolvedImports: Map<string, Map<string, string>>,
+  entries: Set<string>,
+  maxTraceDepth: number,
+  cwd: string | undefined,
+  warnedMessages: Set<string> | undefined,
+): void {
+  const { id, rawId, importer, relativeImporter, options, suggestions, errorFn } = violation
+
+  // Build trace
+  const trace = buildTrace(importer, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd)
+
+  // Build snippet — try multiple key forms for the importer since resolveId
+  // and transform may use different path formats (relative vs absolute, with/without query)
+  let snippet: ImpoundSnippet | undefined
+  const importerBare = importer.split('?')[0]!
+  const importerAbs = cwd && !isAbsolute(importer) ? join(cwd, importer) : importer
+  const importerAbsBare = importerAbs.split('?')[0]!
+  const importerEntry = moduleGraph.get(importer) || moduleGraph.get(importerBare) || moduleGraph.get(importerAbs) || moduleGraph.get(importerAbsBare)
+  if (importerEntry) {
+    const loc = importerEntry.imports.get(rawId)
+    if (loc) {
+      const text = generateSnippet(importerEntry.code, loc.line, loc.column)
+      snippet = { text, line: loc.line, column: loc.column }
+    }
+  }
+
+  let message = violation.message
+  if (trace.length > 1) {
+    message += `\n\nTrace:\n${formatTrace(trace, cwd)}`
+  }
+  if (snippet) {
+    message += `\n\nCode:\n${snippet.text}`
+  }
+  if (suggestions?.length) {
+    message += `\n\nSuggestions:\n${suggestions.map(s => `  - ${s}`).join('\n')}`
+  }
+
+  const violationInfo: ImpoundViolationInfo = {
+    id,
+    importer: relativeImporter,
+    message,
+    trace: trace.length > 1 ? trace : undefined,
+    snippet,
+  }
+
+  if (options.onViolation?.(violationInfo) === false) {
+    return
+  }
+  if (!warnedMessages || !warnedMessages.has(message)) {
+    warnedMessages?.add(message)
+    errorFn(message)
+  }
 }
 
 export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
@@ -277,7 +343,8 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
   // Maps moduleId -> Map<rawSpecifier, resolvedAbsoluteId>
   const resolvedImports = new Map<string, Map<string, string>>()
   const entries = new Set<string>()
-  const pendingViolations: PendingViolation[] = []
+  // Violations waiting for the importer's transform to complete
+  const pendingViolations = new Map<string, PendingViolation[]>()
 
   const plugins = matchers.map((options) => {
     const filter = createFilter(options.include, options.exclude, { resolve: globalOptions.cwd })
@@ -349,8 +416,8 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
             const baseMessage = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`
 
             if (traceEnabled) {
-              // Defer violation — collect for buildEnd
-              pendingViolations.push({
+              const errorFn = options.error === false ? console.error : this.error.bind(this)
+              const violation: PendingViolation = {
                 id,
                 rawId,
                 importer,
@@ -358,7 +425,22 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
                 message: baseMessage,
                 suggestions,
                 options,
-              })
+                errorFn,
+              }
+
+              if (moduleGraph.has(importer)) {
+                // Importer already transformed — enrich and report immediately
+                enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, warnedMessages)
+              }
+              else {
+                // Importer not yet transformed (dev mode) — defer until after transform
+                let pending = pendingViolations.get(importer)
+                if (!pending) {
+                  pending = []
+                  pendingViolations.set(importer, pending)
+                }
+                pending.push(violation)
+              }
             }
             else {
               let message = baseMessage
@@ -384,10 +466,9 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
   })
 
   if (traceEnabled) {
-    // Add a shared plugin for transform (graph building) and buildEnd (reporting)
+    // Add a shared plugin for transform (module graph building) and flushing pending violations.
     plugins.push({
       name: 'impound:trace',
-      enforce: 'pre' as const,
       resolveId(_id: string, importer: string | undefined, resolveOptions?: { isEntry?: boolean }) {
         // Track entry points
         if (!importer && resolveOptions?.isEntry) {
@@ -416,81 +497,21 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
         catch {
           // If parsing fails (e.g. non-JS asset), just skip
         }
-      },
-      buildEnd() {
-        if (pendingViolations.length === 0)
-          return
 
-        const warnedSets = new Map<ImpoundMatcherOptions, Set<string>>()
-        const errors: string[] = []
-
-        for (const violation of pendingViolations) {
-          const { id, rawId, importer, relativeImporter, options, suggestions } = violation
-
-          // Build trace
-          const trace = buildTrace(importer, moduleGraph, resolvedImports, entries, maxTraceDepth)
-
-          // Build snippet
-          let snippet: ImpoundSnippet | undefined
-          const importerEntry = moduleGraph.get(importer)
-          if (importerEntry) {
-            const loc = importerEntry.imports.get(rawId)
-            if (loc) {
-              const text = generateSnippet(importerEntry.code, loc.line, loc.column)
-              snippet = { text, line: loc.line, column: loc.column }
+        // Flush any violations that were waiting for this module's transform.
+        // Check multiple key forms since resolveId may use relative paths while
+        // transform receives absolute paths (or vice versa with query strings).
+        const relativeId = isAbsolute(id) && globalOptions.cwd ? relative(globalOptions.cwd, id) : id
+        const candidateKeys = new Set([id, relativeId, id.split('?')[0]!, relativeId.split('?')[0]!])
+        for (const key of candidateKeys) {
+          const pending = pendingViolations.get(key)
+          if (pending) {
+            pendingViolations.delete(key)
+            for (const violation of pending) {
+              const warnedMessages = violation.options.warn !== 'always' ? new Set<string>() : undefined
+              enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, warnedMessages)
             }
           }
-
-          // Format rich message
-          let message = violation.message
-
-          if (trace.length > 1) {
-            message += `\n\nTrace:\n${formatTrace(trace, globalOptions.cwd)}`
-          }
-
-          if (snippet) {
-            message += `\n\nCode:\n${snippet.text}`
-          }
-
-          if (suggestions?.length) {
-            message += `\n\nSuggestions:\n${suggestions.map(s => `  - ${s}`).join('\n')}`
-          }
-
-          // Call onViolation with enriched info
-          const violationInfo: ImpoundViolationInfo = {
-            id,
-            importer: relativeImporter,
-            message,
-            trace: trace.length > 1 ? trace : undefined,
-            snippet,
-          }
-
-          if (options.onViolation?.(violationInfo) === false) {
-            continue
-          }
-
-          // Deduplication
-          let warnedMessages = warnedSets.get(options)
-          if (options.warn !== 'always') {
-            if (!warnedMessages) {
-              warnedMessages = new Set()
-              warnedSets.set(options, warnedMessages)
-            }
-            if (warnedMessages.has(message))
-              continue
-            warnedMessages.add(message)
-          }
-
-          if (options.error === false) {
-            console.error(message)
-          }
-          else {
-            errors.push(message)
-          }
-        }
-
-        if (errors.length > 0) {
-          this.error(errors.join('\n\n---\n\n'))
         }
       },
     } as any)
