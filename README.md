@@ -55,7 +55,7 @@ ImpoundPlugin.rollup({
 
 Example output:
 
-```
+```text
 Invalid import [importing `secret` from `middle.js`]
 
 Trace:

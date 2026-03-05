@@ -1,3 +1,7 @@
+shellEmulator: true
+
+trustPolicy: no-downgrade
+
 packages:
   - playground
 
@@ -6,4 +10,3 @@ ignoredBuiltDependencies:
 
 onlyBuiltDependencies:
   - simple-git-hooks
-
