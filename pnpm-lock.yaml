@@ -40,7 +40,7 @@ importers:
         specifier: 10.0.2
         version: 10.0.2(jiti@2.6.1)
       nano-staged:
-        specifier: ^0.9.0
+        specifier: 0.9.0
         version: 0.9.0
       rollup:
         specifier: 4.59.0
@@ -49,7 +49,7 @@ importers:
         specifier: 2.13.1
         version: 2.13.1
       tsdown:
-        specifier: ^0.20.3
+        specifier: 0.20.3
         version: 0.20.3(synckit@0.11.12)(typescript@5.9.3)
       typescript:
         specifier: 5.9.3
@@ -1430,9 +1430,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-
-  get-tsconfig@4.10.1:
-    resolution: {integrity: sha512-auHyJ4AgMz7vgS8Hp3N6HXSmlMdUyhSUrfBF16w153rxtLIEOE+HGqaBppczZvnHLqQJfiHotCYpNhl0lUROFQ==}
 
   get-tsconfig@4.13.6:
     resolution: {integrity: sha512-shZT/QMiSHc/YBLxxOkMtgSid5HFoauqCE3/exfsEcwg1WkeqjG+V40yBbBrsD+jW2HDXcs28xOfcbm2jI8Ddw==}
@@ -3254,7 +3251,7 @@ snapshots:
       enhanced-resolve: 5.18.3
       eslint: 10.0.2(jiti@2.6.1)
       eslint-plugin-es-x: 7.8.0(eslint@10.0.2(jiti@2.6.1))
-      get-tsconfig: 4.10.1
+      get-tsconfig: 4.13.6
       globals: 15.15.0
       globrex: 0.1.2
       ignore: 5.3.2
@@ -3486,10 +3483,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  get-tsconfig@4.10.1:
-    dependencies:
-      resolve-pkg-maps: 1.0.0
 
   get-tsconfig@4.13.6:
     dependencies:
