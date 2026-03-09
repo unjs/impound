@@ -1,4 +1,6 @@
-import type { UnpluginBuildContext, UnpluginContext } from 'unplugin'
+import type { SourceMap } from 'rollup'
+import type { UnpluginBuildContext, UnpluginContext, UnpluginOptions } from 'unplugin'
+import { originalPositionFor, sourceContentFor, TraceMap } from '@jridgewell/trace-mapping'
 import { init, parse } from 'es-module-lexer'
 import { isAbsolute, join, relative } from 'pathe'
 import { createUnplugin } from 'unplugin'
@@ -122,6 +124,8 @@ interface ImportLocation {
 
 interface ModuleGraphEntry {
   code: string
+  originalCode?: string
+  sourceMap?: unknown
   imports: Map<string, ImportLocation>
 }
 
@@ -314,8 +318,36 @@ function enrichAndReport(
       }
     }
     if (loc) {
-      const text = generateSnippet(importerEntry.code, loc.line, loc.column)
-      snippet = { text, line: loc.line, column: loc.column }
+      let snippetCode = importerEntry.code
+      let snippetLine = loc.line
+      let snippetColumn = loc.column
+
+      // If a source map is available, reverse-map to original source positions
+      if (importerEntry.sourceMap) {
+        try {
+          const tracer = new TraceMap(importerEntry.sourceMap as ConstructorParameters<typeof TraceMap>[0])
+          const original = originalPositionFor(tracer, { line: loc.line, column: loc.column })
+          if (original.line != null) {
+            snippetLine = original.line
+            /* v8 ignore start -- originalPositionFor always returns column and source when line is non-null */
+            snippetColumn = original.column ?? 0
+            // Prefer original source content from the source map
+            const originalSource = original.source != null ? sourceContentFor(tracer, original.source) : null
+            /* v8 ignore stop */
+            if (originalSource != null) {
+              snippetCode = originalSource
+            }
+            else if (importerEntry.originalCode) {
+              snippetCode = importerEntry.originalCode
+            }
+          }
+        }
+        catch {
+          // Fall back to transformed code positions
+        }
+      }
+
+      snippet = { text: generateSnippet(snippetCode, snippetLine, snippetColumn), line: snippetLine, column: snippetColumn }
     }
   }
 
@@ -347,7 +379,7 @@ function enrichAndReport(
   }
 }
 
-export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
+export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const matchers = 'matchers' in globalOptions ? globalOptions.matchers : [globalOptions]
   const traceEnabled = globalOptions.trace === true
   const maxTraceDepth = globalOptions.maxTraceDepth ?? 20
@@ -360,7 +392,7 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
   // Violations waiting for the importer's transform to complete
   const pendingViolations = new Map<string, PendingViolation[]>()
 
-  const plugins = matchers.map((options) => {
+  const plugins: UnpluginOptions[] = matchers.map((options) => {
     const filter = createFilter(options.include, options.exclude, { resolve: globalOptions.cwd })
     const excludeFilter = options.excludeFiles?.length
       ? createFilter(options.excludeFiles, undefined, { resolve: globalOptions.cwd })
@@ -480,70 +512,103 @@ export const ImpoundPlugin = createUnplugin((globalOptions: ImpoundOptions) => {
   })
 
   if (traceEnabled) {
-    // Add a shared plugin for transform (module graph building) and flushing pending violations.
-    plugins.push({
+    // shared transform logic for module graph building and flushing pending violations.
+    async function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> {
+      await init
+      try {
+        const [imports] = parse(code, id)
+        const importMap = new Map<string, ImportLocation>()
+        for (const imp of imports) {
+          if (imp.n) {
+            const { line, column } = offsetToLineColumn(code, imp.s)
+            importMap.set(imp.n, {
+              line,
+              column,
+              statementStart: imp.ss,
+              statementEnd: imp.se,
+            })
+          }
+        }
+
+        // extract the combined source map for original-source snippets.
+        let originalCode: string | undefined
+        let sourceMap: unknown
+        if (getCombinedSourcemap) {
+          try {
+            const map = getCombinedSourcemap() as { mappings?: string, sourcesContent?: (string | null)[] } | undefined
+            if (map?.mappings) {
+              sourceMap = map
+              const sourcesContent = map.sourcesContent
+              if (sourcesContent?.length && sourcesContent[0]) {
+                originalCode = sourcesContent[0]
+              }
+            }
+          }
+          catch {
+            // getCombinedSourcemap may throw — fall back to transformed code
+          }
+        }
+
+        const graphEntry: ModuleGraphEntry = { code, originalCode, sourceMap, imports: importMap }
+        moduleGraph.set(id, graphEntry)
+        // Also store under normalized key forms so enrichAndReport can find it
+        // when the importer path format differs (e.g. with/without query string)
+        /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
+        const bareId = id.split('?')[0]!
+        if (bareId !== id)
+          moduleGraph.set(bareId, graphEntry)
+        if (isAbsolute(id) && globalOptions.cwd) {
+          const relId = relative(globalOptions.cwd, id)
+          moduleGraph.set(relId, graphEntry)
+          const relBareId = relId.split('?')[0]!
+          if (relBareId !== relId)
+            moduleGraph.set(relBareId, graphEntry)
+        }
+        /* v8 ignore stop */
+      }
+      catch {
+        // If parsing fails (e.g. non-JS asset), just skip
+      }
+
+      // Flush any violations that were waiting for this module's transform.
+      // Check multiple key forms since resolveId may use relative paths while
+      // transform receives absolute paths (or vice versa with query strings).
+      const relativeId = isAbsolute(id) && globalOptions.cwd ? relative(globalOptions.cwd, id) : id
+      const candidateKeys = new Set([id, relativeId, id.split('?')[0]!, relativeId.split('?')[0]!])
+      for (const key of candidateKeys) {
+        const pending = pendingViolations.get(key)
+        if (pending) {
+          pendingViolations.delete(key)
+          for (const violation of pending) {
+            const warnedMessages = violation.options.warn !== 'always' ? new Set<string>() : undefined
+            enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, warnedMessages)
+          }
+        }
+      }
+    }
+
+    // Builder-specific transform hooks that pass getCombinedSourcemap to the shared logic.
+    const transformWithSourceMap = {
+      transform(this: { getCombinedSourcemap?: () => SourceMap }, code: string, id: string) {
+        return traceTransform(code, id, this.getCombinedSourcemap?.bind(this))
+      },
+    }
+
+    const tracePlugin: UnpluginOptions = {
       name: 'impound:trace',
-      resolveId(_id: string, importer: string | undefined, resolveOptions?: { isEntry?: boolean }) {
+      resolveId(_id, importer, resolveOptions) {
         // Track entry points
         if (!importer && resolveOptions?.isEntry) {
           entries.add(_id)
         }
         return null
       },
-      async transform(code: string, id: string) {
-        await init
-        try {
-          const [imports] = parse(code, id)
-          const importMap = new Map<string, ImportLocation>()
-          for (const imp of imports) {
-            if (imp.n) {
-              const { line, column } = offsetToLineColumn(code, imp.s)
-              importMap.set(imp.n, {
-                line,
-                column,
-                statementStart: imp.ss,
-                statementEnd: imp.se,
-              })
-            }
-          }
-          const graphEntry = { code, imports: importMap }
-          moduleGraph.set(id, graphEntry)
-          // Also store under normalized key forms so enrichAndReport can find it
-          // when the importer path format differs (e.g. with/without query string)
-          /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
-          const bareId = id.split('?')[0]!
-          if (bareId !== id)
-            moduleGraph.set(bareId, graphEntry)
-          if (isAbsolute(id) && globalOptions.cwd) {
-            const relId = relative(globalOptions.cwd, id)
-            moduleGraph.set(relId, graphEntry)
-            const relBareId = relId.split('?')[0]!
-            if (relBareId !== relId)
-              moduleGraph.set(relBareId, graphEntry)
-          }
-          /* v8 ignore stop */
-        }
-        catch {
-          // If parsing fails (e.g. non-JS asset), just skip
-        }
-
-        // Flush any violations that were waiting for this module's transform.
-        // Check multiple key forms since resolveId may use relative paths while
-        // transform receives absolute paths (or vice versa with query strings).
-        const relativeId = isAbsolute(id) && globalOptions.cwd ? relative(globalOptions.cwd, id) : id
-        const candidateKeys = new Set([id, relativeId, id.split('?')[0]!, relativeId.split('?')[0]!])
-        for (const key of candidateKeys) {
-          const pending = pendingViolations.get(key)
-          if (pending) {
-            pendingViolations.delete(key)
-            for (const violation of pending) {
-              const warnedMessages = violation.options.warn !== 'always' ? new Set<string>() : undefined
-              enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, warnedMessages)
-            }
-          }
-        }
-      },
-    } as any)
+      transform: traceTransform,
+      rollup: transformWithSourceMap,
+      vite: transformWithSourceMap,
+      rolldown: transformWithSourceMap,
+    }
+    plugins.push(tracePlugin)
   }
 
   return plugins

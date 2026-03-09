@@ -11,6 +11,9 @@ importers:
 
   .:
     dependencies:
+      '@jridgewell/trace-mapping':
+        specifier: ^0.3.31
+        version: 0.3.31
       es-module-lexer:
         specifier: ^2.0.0
         version: 2.0.0

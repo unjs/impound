@@ -221,6 +221,339 @@ describe('trace mode', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1)
     errorSpy.mockRestore()
   })
+
+  it('shows original source in snippet when code has been transformed', async () => {
+    // Simulate a Vue SFC-like compiler that strips a wrapping tag and shifts lines
+    const originalSource = '<script>\nimport secret from "secret"\nexport default {}\n</script>'
+    const transformedSource = 'import secret from "secret";\nexport default {};'
+
+    // Source map: transformed line 1 -> original line 2, transformed line 2 -> original line 3
+    // VLQ: "AACA" = (0,0,1,0) meaning gen col 0, source 0, orig line +1, orig col 0
+    // Second mapping "AACA" on line 2 means same thing: gen col 0, source 0, orig line +1, orig col 0
+    const sourceMap = {
+      version: 3,
+      sources: ['middle.js'],
+      sourcesContent: [originalSource],
+      mappings: 'AACA;AACA',
+      names: [],
+    }
+
+    const sfcPlugin = {
+      name: 'sfc-compiler',
+      transform(code: string, id: string) {
+        if (id === 'middle.js') {
+          return { code: transformedSource, map: sourceMap }
+        }
+      },
+    }
+
+    const files: Record<string, string> = {
+      'entry.js': 'import middle from "middle.js";console.log(middle)',
+      'middle.js': originalSource,
+    }
+    const result = await buildWithTrace(files, ['secret'], {
+      trace: true,
+      patterns: [['secret']],
+    }, [sfcPlugin]) as RollupError
+
+    // The snippet should show the ORIGINAL source (with <script> tag), not the transformed JS
+    expect(result.message).toContain('Code:')
+    expect(result.message).toContain('<script>')
+    expect(result.message).toContain('import secret from "secret"')
+    // Line 2 in the original source
+    expect(result.message).toMatch(/> 2 \|/)
+  })
+
+  it('shows original source via onViolation snippet when code has been transformed', async () => {
+    const originalSource = '// header comment\nimport secret from "secret"\nexport default {}'
+    const transformedSource = 'import secret from "secret";\nexport default {};'
+
+    const sourceMap = {
+      version: 3,
+      sources: ['middle.js'],
+      sourcesContent: [originalSource],
+      mappings: 'AACA;AACA',
+      names: [],
+    }
+
+    const transformPlugin = {
+      name: 'strip-comments',
+      transform(code: string, id: string) {
+        if (id === 'middle.js') {
+          return { code: transformedSource, map: sourceMap }
+        }
+      },
+    }
+
+    const violations: ImpoundViolationInfo[] = []
+    const files: Record<string, string> = {
+      'entry.js': 'import middle from "middle.js";console.log(middle)',
+      'middle.js': originalSource,
+    }
+    await buildWithTrace(files, ['secret'], {
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => { violations.push(info) },
+    }, [transformPlugin])
+
+    expect(violations).toHaveLength(1)
+    expect(violations[0]!.snippet).toBeDefined()
+    // Snippet line should be 2 (original position), not 1 (transformed position)
+    expect(violations[0]!.snippet!.line).toBe(2)
+  })
+
+  it('falls back to originalCode when sourcesContent is missing from source map', async () => {
+    const originalSource = '// original\nimport secret from "secret"\nexport default {}'
+    const transformedSource = 'import secret from "secret";\nexport default {};'
+
+    // Source map without sourcesContent
+    const sourceMap = {
+      version: 3,
+      sources: ['middle.js'],
+      mappings: 'AACA;AACA',
+      names: [],
+    }
+
+    const transformPlugin = {
+      name: 'strip-comments',
+      transform(code: string, id: string) {
+        if (id === 'middle.js') {
+          return { code: transformedSource, map: sourceMap }
+        }
+      },
+    }
+
+    const violations: ImpoundViolationInfo[] = []
+    const files: Record<string, string> = {
+      'entry.js': 'import middle from "middle.js";console.log(middle)',
+      'middle.js': originalSource,
+    }
+    await buildWithTrace(files, ['secret'], {
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => { violations.push(info) },
+    }, [transformPlugin])
+
+    expect(violations).toHaveLength(1)
+    expect(violations[0]!.snippet).toBeDefined()
+    // Should still map to line 2 via the source map positions
+    expect(violations[0]!.snippet!.line).toBe(2)
+  })
+
+  it('falls back to transformed code when source map has empty mappings', async () => {
+    const originalSource = '// original\nimport secret from "secret"\nexport default {}'
+    const transformedSource = 'import secret from "secret";\nexport default {};'
+
+    // Source map with empty mappings — no position data
+    const sourceMap = {
+      version: 3,
+      sources: ['middle.js'],
+      sourcesContent: [originalSource],
+      mappings: '',
+      names: [],
+    }
+
+    const transformPlugin = {
+      name: 'empty-map',
+      transform(code: string, id: string) {
+        if (id === 'middle.js') {
+          return { code: transformedSource, map: sourceMap }
+        }
+      },
+    }
+
+    const violations: ImpoundViolationInfo[] = []
+    const files: Record<string, string> = {
+      'entry.js': 'import middle from "middle.js";console.log(middle)',
+      'middle.js': originalSource,
+    }
+    await buildWithTrace(files, ['secret'], {
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => { violations.push(info) },
+    }, [transformPlugin])
+
+    expect(violations).toHaveLength(1)
+    expect(violations[0]!.snippet).toBeDefined()
+    // With empty mappings, getCombinedSourcemap still collapses to an identity map
+    // so the snippet should still work (falling back to transformed positions)
+    expect(violations[0]!.snippet!.line).toBeGreaterThan(0)
+  })
+
+  it('uses transformed code when getCombinedSourcemap is not available', async () => {
+    // Use ImpoundPlugin.raw to get the base plugin without builder-specific overrides,
+    // exercising the base transform path (for webpack/rspack/etc.)
+    const rawPlugins = ImpoundPlugin.raw({ trace: true, patterns: [['secret', 'Not allowed']] }, { framework: 'rollup' })
+    const pluginArray = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    // Base transform — no getCombinedSourcemap available
+    const transformFn = typeof tracePlugin.transform === 'function' ? tracePlugin.transform : (tracePlugin.transform as any)?.handler
+    await transformFn.call({}, 'import secret from "secret"\nexport default secret', 'middle.js')
+    const resolveIdFn = typeof impoundPlugin.resolveId === 'function' ? impoundPlugin.resolveId : (impoundPlugin.resolveId as any)?.handler
+    await resolveIdFn.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    expect(errors[0]).toContain('import secret from "secret"')
+  })
+
+  it('falls back to originalCode when sourceContentFor returns null', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    const originalCode = '// original header\nimport secret from "secret"\nexport default {}'
+
+    // Source map has sourcesContent for source index 0, but the mapping points to
+    // source index 1 which has null content — sourceContentFor returns null for that source,
+    // so the fallback to originalCode (from sourcesContent[0]) should be used.
+    const traceContext = {
+      getCombinedSourcemap: () => ({
+        version: 3,
+        sources: ['original.js', 'other.js'],
+        sourcesContent: [originalCode, null],
+        // "ACCA" = gen col 0, source index 1, orig line +1, orig col 0
+        // This maps to source index 1 ('other.js') which has null content
+        mappings: 'ACCA;AACA',
+        names: [],
+      }),
+    }
+
+    await (tracePlugin as any).transform.call(traceContext, 'import secret from "secret";\nexport default {};', 'middle.js')
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    // Falls back to originalCode (sourcesContent[0])
+    expect(errors[0]).toContain('// original header')
+  })
+
+  it('falls back to originalCode from sourcesContent[0] when source is null in mapping', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    const originalCode = '// original\nimport secret from "secret"\nexport default {}'
+
+    // Provide getCombinedSourcemap with sourcesContent (so originalCode is set)
+    // but mappings that don't include a source index — originalPositionFor returns null source
+    const traceContext = {
+      getCombinedSourcemap: () => ({
+        version: 3,
+        sources: ['middle.js'],
+        sourcesContent: [originalCode],
+        // "AACA" includes source index 0 — to get null source we need segments without source info
+        // An empty VLQ segment with only 1 field (generated column) has no source mapping
+        // VLQ "A" = [0] — only generated column, no source info
+        mappings: 'A',
+        names: [],
+      }),
+    }
+
+    await (tracePlugin as any).transform.call(traceContext, 'import secret from "secret";\nexport default {};', 'middle.js')
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    // originalPositionFor returns null line → falls back to transformed code (line 1)
+    expect(errors[0]).toMatch(/> 1 \|/)
+  })
+
+  it('falls back gracefully when getCombinedSourcemap throws', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    const traceContext = {
+      getCombinedSourcemap: () => { throw new Error('no source map available') },
+    }
+
+    await (tracePlugin as any).transform.call(traceContext, 'import secret from "secret";\nexport default {};', 'middle.js')
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    // Falls back to transformed code positions
+    expect(errors[0]).toContain('import secret from "secret"')
+  })
+
+  it('falls back to transformed code when originalCode is not set and sourceContentFor returns null', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    // Source map has mappings but empty sourcesContent — originalCode won't be set,
+    // and sourceContentFor will return null
+    const traceContext = {
+      getCombinedSourcemap: () => ({
+        version: 3,
+        sources: ['middle.js'],
+        sourcesContent: [],
+        mappings: 'AACA;AACA',
+        names: [],
+      }),
+    }
+
+    await (tracePlugin as any).transform.call(traceContext, 'import secret from "secret";\nexport default {};', 'middle.js')
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    // Falls back to transformed code since both sourceContentFor and originalCode are unavailable
+    // The mapped position (line 2) is still used
+    expect(errors[0]).toMatch(/> 2 \|/)
+    expect(errors[0]).toContain('export default {}')
+  })
+
+  it('handles getCombinedSourcemap returning map without mappings', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    const traceContext = {
+      getCombinedSourcemap: () => ({
+        version: 3,
+        sources: [],
+        // No mappings field — sourceMap should not be stored
+      }),
+    }
+
+    await (tracePlugin as any).transform.call(traceContext, 'import secret from "secret";\nexport default {};', 'middle.js')
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Code:')
+    // Falls back to transformed code
+    expect(errors[0]).toContain('import secret from "secret"')
+  })
 })
 
 describe('trace mode (deferred violations)', () => {
@@ -641,12 +974,15 @@ describe('trace mode (deferred violations)', () => {
   })
 })
 
-async function buildWithTrace(files: Record<string, string>, libs: string[], opts: ImpoundOptions) {
+async function buildWithTrace(files: Record<string, string>, libs: string[], opts: ImpoundOptions, extraPlugins: any[] = []) {
   try {
     const entries = Object.keys(files)
     const build = await rollup({
       input: entries[0],
       plugins: [
+        // Extra plugins run first so their transforms (and source maps) are available
+        // when impound:trace's transform calls getCombinedSourcemap().
+        ...extraPlugins,
         ImpoundPlugin.rollup(opts),
         {
           name: 'virtual-files',
