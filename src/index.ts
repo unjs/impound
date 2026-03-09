@@ -138,6 +138,7 @@ interface PendingViolation {
   suggestions?: string[]
   options: ImpoundMatcherOptions
   errorFn: (msg: string) => void
+  warnedMessages: Set<string> | undefined
 }
 
 /** Convert a byte offset in source code to a 1-indexed line and 0-indexed column. */
@@ -472,6 +473,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
                 suggestions,
                 options,
                 errorFn,
+                warnedMessages,
               }
 
               if (moduleGraph.has(importer)) {
@@ -584,8 +586,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         if (pending) {
           pendingViolations.delete(key)
           for (const violation of pending) {
-            const warnedMessages = violation.options.warn !== 'always' ? new Set<string>() : undefined
-            enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, warnedMessages)
+            enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, violation.warnedMessages)
           }
         }
       }

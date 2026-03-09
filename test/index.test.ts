@@ -994,6 +994,37 @@ describe('trace mode (deferred violations)', () => {
 
     errorSpy.mockRestore()
   })
+
+  it('deduplicates deferred violations using shared warnedMessages set from matcher', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    // Use two patterns that produce the same message for the same import
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']], error: false })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const context = { error: () => {} }
+
+    // First: defer a violation, then flush via transform
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'a.js')
+    await (tracePlugin as any).transform('import secret from "secret"', 'a.js')
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+
+    // Second: same import from a different file triggers immediate path (a.js already in graph).
+    // The warnedMessages set is shared with the matcher, so the *immediate* violation from b.js
+    // is a different message (different importer) and should log.
+    await (tracePlugin as any).transform('import secret from "secret"', 'b.js')
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'b.js')
+    expect(errorSpy).toHaveBeenCalledTimes(2)
+
+    // Third: re-resolve 'secret' from a.js — immediate path, same message as first.
+    // Should be deduped because the deferred flush used the matcher's warnedMessages set.
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'a.js')
+    expect(errorSpy).toHaveBeenCalledTimes(2) // still 2, deduped
+
+    errorSpy.mockRestore()
+  })
 })
 
 async function buildWithTrace(files: Record<string, string>, libs: string[], opts: ImpoundOptions, extraPlugins: any[] = []) {
