@@ -934,6 +934,28 @@ describe('trace mode (deferred violations)', () => {
     // Should not throw — just skip the dynamic import entry
   })
 
+  it('registers module in graph even when parsing fails (e.g. Vue SFC)', async () => {
+    // When es-module-lexer can't parse a file (like a raw Vue SFC), the module should
+    // still be registered in the graph so that resolveId can report violations immediately.
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
+    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+
+    const errors: string[] = []
+    const context = { error: (msg: string) => errors.push(msg) }
+
+    // Transform with unparseable SFC content — parse will fail
+    await (tracePlugin as any).transform('<script setup>\nimport secret from "secret"\n</script>', 'app.vue')
+
+    // resolveId should find the importer in the graph and report immediately
+    await (impoundPlugin as any).resolveId.call(context, 'secret', 'app.vue')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Not allowed')
+    // No Code: section since parsing failed and import locations are empty
+    expect(errors[0]).not.toContain('Code:')
+  })
+
   it('tracks resolved imports across multiple resolveIds from same importer', async () => {
     const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]

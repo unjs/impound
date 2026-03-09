@@ -515,9 +515,12 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     // shared transform logic for module graph building and flushing pending violations.
     async function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> {
       await init
+      let importMap = new Map<string, ImportLocation>()
+      let originalCode: string | undefined
+      let sourceMap: unknown
+
       try {
         const [imports] = parse(code, id)
-        const importMap = new Map<string, ImportLocation>()
         for (const imp of imports) {
           if (imp.n) {
             const { line, column } = offsetToLineColumn(code, imp.s)
@@ -531,8 +534,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         }
 
         // extract the combined source map for original-source snippets.
-        let originalCode: string | undefined
-        let sourceMap: unknown
         if (getCombinedSourcemap) {
           try {
             const map = getCombinedSourcemap() as { mappings?: string, sourcesContent?: (string | null)[] } | undefined
@@ -548,27 +549,30 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
             // getCombinedSourcemap may throw — fall back to transformed code
           }
         }
-
-        const graphEntry: ModuleGraphEntry = { code, originalCode, sourceMap, imports: importMap }
-        moduleGraph.set(id, graphEntry)
-        // Also store under normalized key forms so enrichAndReport can find it
-        // when the importer path format differs (e.g. with/without query string)
-        /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
-        const bareId = id.split('?')[0]!
-        if (bareId !== id)
-          moduleGraph.set(bareId, graphEntry)
-        if (isAbsolute(id) && globalOptions.cwd) {
-          const relId = relative(globalOptions.cwd, id)
-          moduleGraph.set(relId, graphEntry)
-          const relBareId = relId.split('?')[0]!
-          if (relBareId !== relId)
-            moduleGraph.set(relBareId, graphEntry)
-        }
-        /* v8 ignore stop */
       }
       catch {
-        // If parsing fails (e.g. non-JS asset), just skip
+        // If parsing fails (e.g. non-JS asset like a raw Vue SFC), use empty imports.
+        // We still register the module in the graph so that resolveId can find
+        // the importer and report violations immediately instead of deferring them.
+        importMap = new Map()
       }
+
+      const graphEntry: ModuleGraphEntry = { code, originalCode, sourceMap, imports: importMap }
+      moduleGraph.set(id, graphEntry)
+      // Also store under normalized key forms so enrichAndReport can find it
+      // when the importer path format differs (e.g. with/without query string)
+      /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
+      const bareId = id.split('?')[0]!
+      if (bareId !== id)
+        moduleGraph.set(bareId, graphEntry)
+      if (isAbsolute(id) && globalOptions.cwd) {
+        const relId = relative(globalOptions.cwd, id)
+        moduleGraph.set(relId, graphEntry)
+        const relBareId = relId.split('?')[0]!
+        if (relBareId !== relId)
+          moduleGraph.set(relBareId, graphEntry)
+      }
+      /* v8 ignore stop */
 
       // Flush any violations that were waiting for this module's transform.
       // Check multiple key forms since resolveId may use relative paths while
