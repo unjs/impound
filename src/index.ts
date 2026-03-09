@@ -460,7 +460,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
               : pattern(id, relativeImporter)
 
           if (usesImport) {
-            const baseMessage = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${relativeImporter}\`]`
+            const formattedImporter = relativeImporter.split('?')[0]!
+            const baseMessage = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${formattedImporter}\`]`
 
             if (traceEnabled) {
               const errorFn = options.error === false ? console.error : this.error.bind(this)
