@@ -42,7 +42,7 @@
     "bumpp": "11.0.1",
     "eslint": "10.1.0",
     "nano-staged": "0.9.0",
-    "rollup": "4.59.0",
+    "rollup": "4.60.0",
     "simple-git-hooks": "2.13.1",
     "tsdown": "0.21.4",
     "typescript": "5.9.3",
