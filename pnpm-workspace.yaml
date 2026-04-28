@@ -5,11 +5,10 @@ trustPolicy: no-downgrade
 packages:
   - playground
 
+overrides:
+  impound: 'link:.'
 ignoredBuiltDependencies:
   - esbuild
 
 onlyBuiltDependencies:
   - simple-git-hooks
-
-overrides:
-  impound: "link:."
