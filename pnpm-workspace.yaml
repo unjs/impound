@@ -10,3 +10,6 @@ ignoredBuiltDependencies:
 
 onlyBuiltDependencies:
   - simple-git-hooks
+
+overrides:
+  impound: "link:."

@@ -49,9 +49,6 @@
     "vite": "8.0.9",
     "vitest": "4.1.4"
   },
-  "resolutions": {
-    "impound": "link:."
-  },
   "simple-git-hooks": {
     "pre-commit": "pnpm exec nano-staged"
   },
