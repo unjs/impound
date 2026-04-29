@@ -2,7 +2,7 @@
   "name": "impound",
   "type": "module",
   "version": "1.1.5",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@10.33.2",
   "description": "Builder-agnostic plugin to allow restricting import patterns in certain parts of your code-base.",
   "license": "MIT",
   "repository": "unjs/impound",
@@ -44,7 +44,7 @@
     "nano-staged": "1.0.2",
     "rollup": "4.60.2",
     "simple-git-hooks": "2.13.1",
-    "tsdown": "0.21.9",
+    "tsdown": "0.21.10",
     "typescript": "6.0.3",
     "vite": "8.0.9",
     "vitest": "4.1.4"
