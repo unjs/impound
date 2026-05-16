@@ -7,8 +7,7 @@ packages:
 
 overrides:
   impound: 'link:.'
-ignoredBuiltDependencies:
-  - esbuild
 
-onlyBuiltDependencies:
-  - simple-git-hooks
+allowBuilds:
+  esbuild: false
+  simple-git-hooks: true
