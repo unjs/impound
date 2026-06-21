@@ -141,17 +141,41 @@ interface PendingViolation {
   warnedMessages: Set<string> | undefined
 }
 
-/** Convert a byte offset in source code to a 1-indexed line and 0-indexed column. */
-function offsetToLineColumn(code: string, offset: number): { line: number, column: number } {
+/** Map imports to 1-indexed lines and 0-indexed UTF-16 columns. */
+function getImportLocations(code: string, imports: readonly { n: string | undefined, s: number, ss: number, se: number }[]): Map<string, ImportLocation> {
+  const locations = new Map<string, ImportLocation>()
   let line = 1
   let lastNewline = -1
-  for (let i = 0; i < offset && i < code.length; i++) {
-    if (code[i] === '\n') {
-      line++
-      lastNewline = i
+  let offset = 0
+
+  for (const imp of imports) {
+    if (!imp.n)
+      continue
+
+    // es-module-lexer emits source-ordered imports. Reset defensively if that ever changes.
+    if (imp.s < offset) {
+      line = 1
+      lastNewline = -1
+      offset = 0
     }
+
+    while (offset < imp.s && offset < code.length) {
+      if (code[offset] === '\n') {
+        line++
+        lastNewline = offset
+      }
+      offset++
+    }
+
+    locations.set(imp.n, {
+      line,
+      column: imp.s - lastNewline - 1,
+      statementStart: imp.ss,
+      statementEnd: imp.se,
+    })
   }
-  return { line, column: offset - lastNewline - 1 }
+
+  return locations
 }
 
 /** Generate a code snippet with context lines, a `>` marker, and a `^` caret. */
@@ -524,17 +548,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
       try {
         const [imports] = parse(code, id)
-        for (const imp of imports) {
-          if (imp.n) {
-            const { line, column } = offsetToLineColumn(code, imp.s)
-            importMap.set(imp.n, {
-              line,
-              column,
-              statementStart: imp.ss,
-              statementEnd: imp.se,
-            })
-          }
-        }
+        importMap = getImportLocations(code, imports)
 
         // extract the combined source map for original-source snippets.
         if (getCombinedSourcemap) {
