@@ -154,6 +154,50 @@ describe('impound plugin', () => {
 })
 
 describe('trace mode', () => {
+  it.each([
+    {
+      name: 'the last duplicate import',
+      code: [
+        'import \'secret\'',
+        'const value = 1',
+        'import \'secret\'',
+      ].join('\n'),
+      line: 3,
+      column: 8,
+    },
+    {
+      name: 'a multiline import',
+      code: [
+        'import {',
+        '  value,',
+        '} from \'secret\'',
+      ].join('\n'),
+      line: 3,
+      column: 8,
+    },
+    {
+      name: 'an import after a nonliteral dynamic import',
+      code: [
+        'import(name + suffix)',
+        '',
+        'import \'secret\'',
+      ].join('\n'),
+      line: 3,
+      column: 8,
+    },
+    {
+      name: 'an import after astral Unicode',
+      code: 'const value = \'😀\'; import \'secret\'',
+      line: 1,
+      column: 28,
+    },
+  ])('preserves the diagnostic location for $name', async ({ code, line, column }) => {
+    const violation = await getTraceViolation(code)
+
+    expect(violation.snippet).toMatchObject({ line, column })
+    expect(violation.snippet!.text).toContain(`${' '.repeat(column)}^`)
+  })
+
   it('includes import trace in violation', async () => {
     const result = await processTrace({
       trace: true,
@@ -386,7 +430,7 @@ describe('trace mode', () => {
   it('uses transformed code when getCombinedSourcemap is not available', async () => {
     // Use ImpoundPlugin.raw to get the base plugin without builder-specific overrides,
     // exercising the base transform path (for webpack/rspack/etc.)
-    const rawPlugins = ImpoundPlugin.raw({ trace: true, patterns: [['secret', 'Not allowed']] }, { framework: 'rollup' })
+    const rawPlugins = ImpoundPlugin.raw({ trace: true, patterns: [['secret', 'Not allowed']] }, { framework: 'rollup', versions: {} })
     const pluginArray = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
     const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
     const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
@@ -1063,6 +1107,27 @@ async function processTrace(opts: ImpoundOptions) {
   }
   const libs = ['secret']
   return buildWithTrace(files, libs, opts)
+}
+
+async function getTraceViolation(code: string): Promise<ImpoundViolationInfo> {
+  let violation: ImpoundViolationInfo | undefined
+  const plugins = ImpoundPlugin.rollup({
+    trace: true,
+    patterns: [['secret', 'Invalid import']],
+    onViolation: (info) => {
+      violation = info
+      return false
+    },
+  })
+  const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+  const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+  const tracePlugin = pluginArray.find(plugin => plugin.name === 'impound:trace')!
+
+  await (tracePlugin as any).transform.call({}, code, 'entry.js')
+  await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+
+  expect(violation).toBeDefined()
+  return violation!
 }
 
 async function process(code: string, opts: ImpoundOptions, importer = 'entry.js') {
