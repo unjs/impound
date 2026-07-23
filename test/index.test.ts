@@ -430,7 +430,7 @@ describe('trace mode', () => {
   it('uses transformed code when getCombinedSourcemap is not available', async () => {
     // Use ImpoundPlugin.raw to get the base plugin without builder-specific overrides,
     // exercising the base transform path (for webpack/rspack/etc.)
-    const rawPlugins = ImpoundPlugin.raw({ trace: true, patterns: [['secret', 'Not allowed']] }, { framework: 'rollup' })
+    const rawPlugins = ImpoundPlugin.raw({ trace: true, patterns: [['secret', 'Not allowed']] }, { framework: 'rollup', versions: {} })
     const pluginArray = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
     const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
     const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
