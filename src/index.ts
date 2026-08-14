@@ -7,6 +7,7 @@ import { createUnplugin } from 'unplugin'
 import { createFilter } from 'unplugin-utils'
 
 const PROXY_ID = '\0impound:proxy'
+const PROXY_ID_RE = /^\0impound:proxy$/
 
 // based on https://github.com/unjs/mocked-exports
 const PROXY_CODE = `
@@ -114,6 +115,8 @@ export interface ImpoundSharedOptions {
 export type ImpoundOptions = (ImpoundSharedOptions & ImpoundMatcherOptions) | (ImpoundSharedOptions & { matchers: ImpoundMatcherOptions[] })
 
 const RELATIVE_IMPORT_RE = /^\.\.?\//
+
+const BINARY_ASSET_RE = /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|woff2?|[ot]tf|eot|mp[34]|webm|ogg|wav|flac|pdf|zip|gz|wasm)(?:\?.*)?$/i
 
 interface ImportLocation {
   line: number
@@ -427,10 +430,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     return {
       name: 'impound',
       enforce: 'pre' as const,
-      load(id: string) {
-        if (id === PROXY_ID) {
-          return PROXY_CODE
-        }
+      load: {
+        filter: { id: PROXY_ID_RE },
+        handler(id: string) {
+          if (id === PROXY_ID) {
+            return PROXY_CODE
+          }
+        },
       },
       resolveId(this: UnpluginBuildContext & UnpluginContext, id: string, importer: string | undefined, resolveOptions?: { isEntry?: boolean }) {
         if (id === PROXY_ID) {
@@ -541,6 +547,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   if (traceEnabled) {
     // shared transform logic for module graph building and flushing pending violations.
     async function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> {
+      if (BINARY_ASSET_RE.test(id))
+        return
+
       await init
       let importMap = new Map<string, ImportLocation>()
       let originalCode: string | undefined
@@ -614,6 +623,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       },
     }
 
+    const filteredTransformWithSourceMap = {
+      transform: {
+        filter: { id: { exclude: BINARY_ASSET_RE } },
+        handler: transformWithSourceMap.transform,
+      },
+    }
+
     const tracePlugin: UnpluginOptions = {
       name: 'impound:trace',
       resolveId(_id, importer, resolveOptions) {
@@ -623,10 +639,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         }
         return null
       },
-      transform: traceTransform,
+      transform: {
+        filter: { id: { exclude: BINARY_ASSET_RE } },
+        handler: traceTransform,
+      },
       rollup: transformWithSourceMap,
-      vite: transformWithSourceMap,
-      rolldown: transformWithSourceMap,
+      vite: filteredTransformWithSourceMap,
+      rolldown: filteredTransformWithSourceMap,
     }
     plugins.push(tracePlugin)
   }

@@ -1,4 +1,5 @@
 import type { RollupError } from 'rollup'
+import type { ObjectHook } from 'unplugin'
 import type { ImpoundOptions, ImpoundViolationInfo } from '../src'
 import { rollup } from 'rollup'
 import { describe, expect, it, vi } from 'vitest'
@@ -1157,3 +1158,50 @@ async function process(code: string, opts: ImpoundOptions, importer = 'entry.js'
     return e as RollupError
   }
 }
+
+describe('hook filters', () => {
+  it('should only claim the proxy module in load', () => {
+    const rawPlugins = ImpoundPlugin.raw({ patterns: [['bar']] }, { framework: 'rollup', versions: {} })
+    const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
+    const impoundPlugin = plugins.find(p => p.name === 'impound')!
+
+    const loadFilter = (impoundPlugin.load as ObjectHook<any, 'id'>).filter!.id as RegExp
+    expect(loadFilter.test('\0impound:proxy')).toBe(true)
+    expect(loadFilter.test('/app/assets/font.woff2')).toBe(false)
+    expect(loadFilter.test('/app/entry.js')).toBe(false)
+  })
+
+  it('should not transform binary assets in trace mode', () => {
+    const rawPlugins = ImpoundPlugin.raw({ trace: true, patterns: [['bar']] }, { framework: 'rollup', versions: {} })
+    const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
+    const tracePlugin = plugins.find(p => p.name === 'impound:trace')!
+
+    const excludeFilter = ((tracePlugin.transform as ObjectHook<any, 'id'>).filter!.id as { exclude: RegExp }).exclude
+    expect(excludeFilter.test('/app/assets/font.woff2')).toBe(true)
+    expect(excludeFilter.test('/app/assets/logo.png?inline')).toBe(true)
+    expect(excludeFilter.test('/app/entry.js')).toBe(false)
+  })
+
+  it('should not transform binary assets via a converted adapter', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['bar']] }) as any[]
+    const tracePlugin = plugins.find(p => p.name === 'impound:trace')!
+
+    const getCombinedSourcemap = vi.fn(() => ({ mappings: '' }))
+
+    await tracePlugin.transform.call({ getCombinedSourcemap }, 'export default 1', '/app/assets/logo.png?inline')
+    expect(getCombinedSourcemap).not.toHaveBeenCalled()
+
+    await tracePlugin.transform.call({ getCombinedSourcemap }, 'export default 1', '/app/entry.js')
+    expect(getCombinedSourcemap).toHaveBeenCalled()
+  })
+
+  it.each(['vite', 'rolldown'] as const)('should keep the binary asset filter on the %s adapter', (framework) => {
+    const plugins = ImpoundPlugin[framework]({ trace: true, patterns: [['bar']] }) as any[]
+    const tracePlugin = plugins.find(p => p.name === 'impound:trace')!
+
+    const excludeFilter = (tracePlugin.transform as ObjectHook<any, 'id'>).filter!.id as { exclude: RegExp }
+    expect(excludeFilter.exclude.test('/app/assets/font.woff2')).toBe(true)
+    expect(excludeFilter.exclude.test('/app/assets/logo.png?inline')).toBe(true)
+    expect(excludeFilter.exclude.test('/app/entry.js')).toBe(false)
+  })
+})
