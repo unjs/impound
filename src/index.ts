@@ -419,57 +419,76 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   // Violations waiting for the importer's transform to complete
   const pendingViolations = new Map<string, PendingViolation[]>()
 
-  const plugins: UnpluginOptions[] = matchers.map((options) => {
-    const filter = createFilter(options.include, options.exclude, { resolve: globalOptions.cwd })
-    const excludeFilter = options.excludeFiles?.length
-      ? createFilter(options.excludeFiles, undefined, { resolve: globalOptions.cwd })
-      : undefined
-    const warnedMessages = options.warn !== 'always' ? new Set<string>() : undefined
+  const cwd = globalOptions.cwd
 
-    return {
-      name: 'impound',
-      enforce: 'pre' as const,
-      load: {
-        filter: { id: PROXY_ID_RE },
-        handler(id: string) {
-          if (id === PROXY_ID) {
-            return PROXY_CODE
-          }
-        },
-      },
-      resolveId(this: UnpluginBuildContext & UnpluginContext, id: string, importer: string | undefined, resolveOptions?: { isEntry?: boolean }) {
+  interface MatcherState {
+    options: ImpoundMatcherOptions
+    filter: (id: string) => boolean
+    excludeFilter?: (id: string) => boolean
+    warnedMessages?: Set<string>
+  }
+
+  const matcherStates: MatcherState[] = matchers.map(options => ({
+    options,
+    filter: createFilter(options.include, options.exclude, { resolve: cwd }),
+    excludeFilter: options.excludeFiles?.length
+      ? createFilter(options.excludeFiles, undefined, { resolve: cwd })
+      : undefined,
+    warnedMessages: options.warn !== 'always' ? new Set<string>() : undefined,
+  }))
+
+  const plugins: UnpluginOptions[] = [{
+    name: 'impound',
+    enforce: 'pre' as const,
+    load: {
+      filter: { id: PROXY_ID_RE },
+      handler(id: string) {
         if (id === PROXY_ID) {
-          return id
+          return PROXY_CODE
         }
-        if (!importer) {
-          // This is an entry point resolution
-          if (traceEnabled && resolveOptions?.isEntry) {
-            entries.add(id)
-          }
-          return
+      },
+    },
+    resolveId(this: UnpluginBuildContext & UnpluginContext, id: string, importer: string | undefined, resolveOptions?: { isEntry?: boolean }) {
+      if (id === PROXY_ID) {
+        return id
+      }
+      if (!importer) {
+        // This is an entry point resolution
+        if (traceEnabled && resolveOptions?.isEntry) {
+          entries.add(id)
+        }
+        return
+      }
+
+      const rawId = id
+      // Lazily computed once per call and shared across matchers
+      let resolvedId: string | undefined
+      let relativeId: string | undefined
+      let relativeImporter: string | undefined
+      let trackedForTrace = false
+
+      for (const matcher of matcherStates) {
+        if (!matcher.filter(importer)) {
+          continue
         }
 
-        if (!filter(importer)) {
-          return
-        }
-
-        const rawId = id
-
-        if (RELATIVE_IMPORT_RE.test(id)) {
-          id = join(importer.split('?')[0]!, '..', id)
-        }
+        resolvedId ??= RELATIVE_IMPORT_RE.test(rawId)
+          ? join(importer.split('?')[0]!, '..', rawId)
+          : rawId
 
         // Skip resolved targets matching excludeFiles
-        if (excludeFilter?.(id)) {
-          return
+        if (matcher.excludeFilter?.(resolvedId)) {
+          continue
         }
 
-        if (isAbsolute(id) && globalOptions.cwd) {
-          id = relative(globalOptions.cwd, id)
-        }
+        relativeId ??= isAbsolute(resolvedId) && cwd ? relative(cwd, resolvedId) : resolvedId
+        const id = relativeId
+
+        relativeImporter ??= isAbsolute(importer) && cwd ? relative(cwd, importer) : importer
 
         // Track resolved imports for trace mode
-        if (traceEnabled) {
+        if (traceEnabled && !trackedForTrace) {
+          trackedForTrace = true
           let importerResolved = resolvedImports.get(importer)
           if (!importerResolved) {
             importerResolved = new Map()
@@ -478,9 +497,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
           importerResolved.set(rawId, id)
         }
 
+        const { options, warnedMessages } = matcher
         let matched = false
 
-        const relativeImporter = isAbsolute(importer) && globalOptions.cwd ? relative(globalOptions.cwd, importer) : importer
         for (const [pattern, warning, suggestions] of options.patterns) {
           const usesImport = pattern instanceof RegExp
             ? pattern.test(id)
@@ -508,7 +527,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
               if (moduleGraph.has(importer)) {
                 // Importer already transformed — enrich and report immediately
-                enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, warnedMessages)
+                enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd, warnedMessages)
               }
               else {
                 // Importer not yet transformed (dev mode) — defer until after transform
@@ -538,10 +557,12 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
           }
         }
 
-        return matched ? PROXY_ID : null
-      },
-    }
-  })
+        if (matched) {
+          return PROXY_ID
+        }
+      }
+    },
+  }]
 
   if (traceEnabled) {
     // shared transform logic for module graph building and flushing pending violations.
