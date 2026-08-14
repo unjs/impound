@@ -456,7 +456,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         const rawId = id
 
         if (RELATIVE_IMPORT_RE.test(id)) {
-          id = join(importer, '..', id)
+          id = join(importer.split('?')[0]!, '..', id)
         }
 
         // Skip resolved targets matching excludeFiles
