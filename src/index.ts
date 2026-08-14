@@ -514,6 +514,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
         const { options, warnedMessages } = matcher
         let matched = false
+        let formattedImporter: string | undefined
 
         for (const [pattern, warning, suggestions] of options.patterns) {
           const usesImport = pattern instanceof RegExp
@@ -523,7 +524,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
               : pattern(id, relativeImporter)
 
           if (usesImport) {
-            const formattedImporter = relativeImporter.split('?')[0]!
+            formattedImporter ??= relativeImporter.split('?')[0]!
             const baseMessage = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${formattedImporter}\`]`
 
             if (traceEnabled) {
