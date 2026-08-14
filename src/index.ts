@@ -424,6 +424,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   interface MatcherState {
     options: ImpoundMatcherOptions
     filter: (id: string) => boolean
+    filterCache: Map<string, boolean>
     excludeFilter?: (id: string) => boolean
     warnedMessages?: Set<string>
   }
@@ -431,11 +432,14 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const matcherStates: MatcherState[] = matchers.map(options => ({
     options,
     filter: createFilter(options.include, options.exclude, { resolve: cwd }),
+    filterCache: new Map(),
     excludeFilter: options.excludeFiles?.length
       ? createFilter(options.excludeFiles, undefined, { resolve: cwd })
       : undefined,
     warnedMessages: options.warn !== 'always' ? new Set<string>() : undefined,
   }))
+
+  const relativeImporterCache = new Map<string, string>()
 
   const plugins: UnpluginOptions[] = [{
     name: 'impound',
@@ -468,7 +472,12 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       let trackedForTrace = false
 
       for (const matcher of matcherStates) {
-        if (!matcher.filter(importer)) {
+        let included = matcher.filterCache.get(importer)
+        if (included === undefined) {
+          included = matcher.filter(importer)
+          matcher.filterCache.set(importer, included)
+        }
+        if (!included) {
           continue
         }
 
@@ -484,7 +493,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         relativeId ??= isAbsolute(resolvedId) && cwd ? relative(cwd, resolvedId) : resolvedId
         const id = relativeId
 
-        relativeImporter ??= isAbsolute(importer) && cwd ? relative(cwd, importer) : importer
+        if (relativeImporter === undefined) {
+          relativeImporter = relativeImporterCache.get(importer)
+          if (relativeImporter === undefined) {
+            relativeImporter = isAbsolute(importer) && cwd ? relative(cwd, importer) : importer
+            relativeImporterCache.set(importer, relativeImporter)
+          }
+        }
 
         // Track resolved imports for trace mode
         if (traceEnabled && !trackedForTrace) {
