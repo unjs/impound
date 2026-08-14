@@ -28,7 +28,6 @@ function createMock(name, overrides = {}) {
     },
     apply(_target, _this, _args) { return createMock(\`\${name}()\`); },
     construct(_target, _args, _newT) { return createMock(\`[\${name}]\`); },
-    enumerate() { return []; },
   });
   return proxy;
 }
