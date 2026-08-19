@@ -229,7 +229,8 @@ function findImportLocation(
     if (cwd && isAbsolute(resolved)) {
       normalizedResolved = relative(cwd, resolved)
     }
-    if (normalizedResolved === id || resolved === rawId || specifier.endsWith(id)) {
+    // The suffix match needs a path boundary, or `./data.js` matches a step for `a.js`.
+    if (normalizedResolved === id || resolved === rawId || specifier === id || specifier.endsWith(`/${id}`)) {
       return specLoc
     }
   }
@@ -698,7 +699,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       handler(id: string) {
         if (id === PROXY_ID) {
           // Named imports from the proxy would fail the bundler's export check, and that
-          // error names `impound:proxy` instead of the offending import.
+          // error names `impound:proxy` instead of the offending import. Rollup only:
+          // rolldown, webpack, rspack and esbuild ignore `syntheticNamedExports`.
           return { code: PROXY_CODE, syntheticNamedExports: 'default' } as unknown as string
         }
       },
@@ -952,8 +954,11 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     // On the main plugin so violations stay attributed to `impound`. No transform hook:
     // nothing is parsed, no sourcemap forced, nothing retained.
     Object.assign(plugins[0]!, {
-      async buildEnd(this: UnpluginBuildContext) {
-        if (pendingViolations.size === 0) {
+      async buildEnd(this: UnpluginBuildContext, buildError?: unknown) {
+        // The build is already failing, and the graph it left behind is incomplete.
+        // Reporting here would replace the root cause in the surfaced output.
+        if (buildError || pendingViolations.size === 0) {
+          pendingViolations.clear()
           return
         }
 

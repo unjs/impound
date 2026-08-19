@@ -88,7 +88,7 @@ violation actually happens.
 |---|---|---|
 | Import chain | yes | yes, including dynamic imports |
 | Code snippet | yes | yes |
-| Snippet shows | original source | code as the bundler has it |
+| Snippet shows | original source | original source on webpack and rspack, otherwise the code the bundler holds |
 | Per-module cost | parse + sourcemap + retain | none |
 | Bundlers | all | all except esbuild |
 
@@ -101,6 +101,13 @@ ImpoundPlugin.vite({
   patterns: [[/\.server$/, 'Server-only import']]
 })
 ```
+
+A denied import is replaced by a proxy module. That proxy has only a default export,
+and `syntheticNamedExports` papers over it on Rollup alone: rolldown, webpack, rspack and
+esbuild ignore it. So on those, a named import from a denied module can still fail with
+an error naming `impound:proxy` before impound reports the real violation. It shows up
+when a build is allowed to continue past a violation, which means `error: false`, or
+lazy tracing, which reports at `buildEnd`.
 
 Lazy reads the graph through `getModuleInfo` on rollup, vite and rolldown, and through
 `compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from `originalSource()`,

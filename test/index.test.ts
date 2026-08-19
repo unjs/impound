@@ -1181,6 +1181,74 @@ describe('trace mode (lazy) on webpack and rspack', () => {
   })
 })
 
+describe('reporting when the build is already failing', () => {
+  // Driven through the hooks: whether a real build buffers the violation before an
+  // unrelated plugin throws is a race, so a build cannot pin this down.
+  const lazy = () => {
+    const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Denied']] })
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    return array.find(plugin => plugin.name === 'impound')!
+  }
+  const ctx = (error: (msg: string) => void) => ({
+    error,
+    getModuleInfo: (id: string) => ({
+      code: id === 'middle.js' ? 'import secret from "secret"' : 'import middle from "middle.js"',
+      importers: id === 'middle.js' ? ['entry.js'] : [],
+      isEntry: id === 'entry.js',
+    }),
+  })
+
+  it('stays quiet when buildEnd is handed a build error', async () => {
+    const plugin = lazy()
+    const error = vi.fn()
+    await (plugin as any).resolveId.call(ctx(error), 'secret', 'middle.js')
+    await (plugin as any).buildEnd.call(ctx(error), new Error('unrelated plugin failure'))
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('does not carry the violation into the next build', async () => {
+    const plugin = lazy()
+    const error = vi.fn()
+    await (plugin as any).resolveId.call(ctx(error), 'secret', 'middle.js')
+    await (plugin as any).buildEnd.call(ctx(error), new Error('unrelated plugin failure'))
+    await (plugin as any).buildEnd.call(ctx(error))
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('reports as usual when the build has not failed', async () => {
+    const plugin = lazy()
+    const error = vi.fn()
+    await (plugin as any).resolveId.call(ctx(error), 'secret', 'middle.js')
+    await (plugin as any).buildEnd.call(ctx(error))
+    expect(error).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('locating a denied import the bundler pre-resolved', () => {
+  // `resolveId` can be handed an already-resolved id, which is not a key in the
+  // importer's import map, so the lookup falls back to matching by suffix.
+  it('does not match a specifier that merely ends with the same name', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    const plugins = ImpoundPlugin.rollup({
+      trace: true,
+      patterns: [[/a\.js$/, 'Denied']],
+      onViolation: (info) => {
+        violations.push(info)
+        return false
+      },
+    })
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    const impound = array.find(plugin => plugin.name === 'impound')!
+    const trace = array.find(plugin => plugin.name === 'impound:trace')!
+
+    await (trace as any).transform.call({}, 'import "./data.js"\nimport "./a.js"\n', 'entry.js')
+    await (impound as any).resolveId.call({ error: () => {} }, 'a.js', 'entry.js')
+
+    // the caret belongs on line 2, where `./a.js` is imported, not line 1 (`./data.js`)
+    expect(violations[0]!.snippet!.line).toBe(2)
+  })
+})
+
 describe('trace mode parity on a real build', () => {
   // Same violation, same project, both modes. The report a developer sees should carry
   // the same facts whichever mode produced it.
