@@ -1072,6 +1072,147 @@ describe('trace mode (deferred violations)', () => {
   })
 })
 
+describe('denied modules with named imports', () => {
+  // The proxy substituted for a denied import only has a default export, so a named
+  // import from it used to fail the bundler's static export check. That error names
+  // `impound:proxy` instead of the offending import, and when the build is allowed to
+  // continue past the violation it can surface ahead of impound's own report.
+  const files = {
+    'entry.js': 'import { helper } from "middle.js";console.log(helper)',
+    'middle.js': 'import { getUsers } from "secret";export const helper = getUsers',
+  }
+
+  it('lets the build continue when only warning', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await buildWithTrace(files, ['secret'], {
+      patterns: [['secret', 'Not allowed']],
+      error: false,
+    })
+    expect(result).not.toHaveProperty('message')
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Not allowed'))
+    errorSpy.mockRestore()
+  })
+
+  it('reports the denied import, not a missing proxy export', async () => {
+    const result = await buildWithTrace(files, ['secret'], {
+      trace: 'lazy',
+      patterns: [['secret', 'Not allowed']],
+    }) as RollupError
+    expect(result.message).toContain('Not allowed')
+    expect(result.message).not.toContain('is not exported by')
+  })
+})
+
+describe('trace mode (lazy)', () => {
+  it('reports under the same plugin name as eager mode', async () => {
+    const eager = await processTrace({ trace: true, patterns: [['secret']] }) as RollupError
+    const lazy = await processTrace({ trace: 'lazy', patterns: [['secret']] }) as RollupError
+    expect(eager.message.startsWith('[plugin impound]')).toBe(true)
+    expect(lazy.message.startsWith('[plugin impound]')).toBe(true)
+  })
+
+  it('registers no transform hook, so no module is parsed to collect a graph', () => {
+    const eager = ImpoundPlugin.rollup({ trace: true, patterns: [['secret']] })
+    const lazy = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret']] })
+
+    const hooks = (plugins: unknown) => (Array.isArray(plugins) ? plugins : [plugins])
+      .filter((plugin: any) => plugin.transform)
+      .map((plugin: any) => plugin.name)
+
+    expect(hooks(eager)).toContain('impound:trace')
+    expect(hooks(lazy)).toEqual([])
+  })
+
+  it('builds the import chain from the bundler graph', async () => {
+    const result = await processTrace({
+      trace: 'lazy',
+      patterns: [['secret']],
+    }) as RollupError
+    expect(result.message).toContain('Trace:')
+    expect(result.message).toContain('entry.js')
+    expect(result.message).toContain('middle.js')
+  })
+
+  it('includes a code snippet pointing at the denied import', async () => {
+    const result = await processTrace({
+      trace: 'lazy',
+      patterns: [['secret']],
+    }) as RollupError
+    expect(result.message).toContain('Code:')
+    expect(result.message).toContain('import secret from "secret"')
+    expect(result.message).toContain('^')
+  })
+
+  it('includes suggestions', async () => {
+    const result = await processTrace({
+      trace: 'lazy',
+      patterns: [['secret', 'Server-only import', ['Use a server function']]],
+    }) as RollupError
+    expect(result.message).toContain('Suggestions:')
+    expect(result.message).toContain('Use a server function')
+  })
+
+  it('calls onViolation with trace and snippet', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    await processTrace({
+      trace: 'lazy',
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => { violations.push(info) },
+    })
+    expect(violations).toHaveLength(1)
+    expect(violations[0]!.trace!.length).toBeGreaterThanOrEqual(2)
+    expect(violations[0]!.trace!.at(0)!.file).toContain('entry.js')
+    expect(violations[0]!.trace!.at(-1)!.file).toContain('middle.js')
+    expect(violations[0]!.snippet!.line).toBe(1)
+  })
+
+  it('annotates each step with the specifier that leads to the next', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    await processTrace({
+      trace: 'lazy',
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => { violations.push(info) },
+    })
+    expect(violations[0]!.trace!.at(0)!.import).toBe('middle.js')
+  })
+
+  it('suppresses the error when onViolation returns false', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await processTrace({
+      trace: 'lazy',
+      patterns: [['secret']],
+      error: false,
+      onViolation: () => false,
+    })
+    expect((result as RollupError).message).toBeUndefined()
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('reports the plain message when the bundler exposes no module graph', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'secret', 'middle.js')
+
+    // A webpack/rspack-shaped context: no getModuleInfo, no error.
+    await expect((impoundPlugin as any).buildEnd.call({})).rejects.toThrow('Not allowed')
+  })
+
+  it('holds violations until the graph is complete rather than reporting on resolve', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    const error = vi.fn()
+
+    await (impoundPlugin as any).resolveId.call({ error }, 'secret', 'middle.js')
+
+    expect(error).not.toHaveBeenCalled()
+  })
+})
+
 async function buildWithTrace(files: Record<string, string>, libs: string[], opts: ImpoundOptions, extraPlugins: any[] = []) {
   try {
     const entries = Object.keys(files)
