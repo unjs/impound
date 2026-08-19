@@ -1112,7 +1112,7 @@ describe('trace mode (lazy) graph walking', () => {
     return array.find(plugin => plugin.name === 'impound')!
   }
 
-  const walk = async (graph: Record<string, { code?: string, importers?: string[], isEntry?: boolean }>, importer: string) => {
+  const walk = async (graph: Record<string, { code?: string, importers?: string[], dynamicImporters?: string[], isEntry?: boolean }>, importer: string) => {
     const plugin = lazyPlugin()
     const error = vi.fn()
     const ctx = { error, getModuleInfo: (id: string) => graph[id] ?? null }
@@ -1166,7 +1166,37 @@ describe('trace mode (lazy) graph walking', () => {
     graph[previous].code = 'import secret from "secret"'
     const message = await walk(graph, previous)
     expect(message).toContain('Not allowed')
-    expect(message!.split('\n').filter(line => /^\s+\d+\./.test(line)).length).toBeLessThanOrEqual(4)
+    // A truncated middle would name a non-entry module `(entry)`. Report no chain.
+    expect(message).not.toContain('Trace:')
+  })
+
+  it('reports no chain when no entry is reachable', async () => {
+    const message = await walk({
+      'orphan-root.js': { code: 'import "mid.js"', importers: [] },
+      'mid.js': { code: 'import "leaf.js"', importers: ['orphan-root.js'] },
+      'leaf.js': { code: 'import secret from "secret"', importers: ['mid.js'] },
+    }, 'leaf.js')
+    expect(message).toContain('Not allowed')
+    expect(message).not.toContain('(entry)')
+  })
+
+  it('annotates the specifier that resolves, not one that merely ends with it', async () => {
+    const message = await walk({
+      'entry.js': { code: 'import "./data.js"\nimport "./a.js"', importers: [], isEntry: true },
+      'a.js': { code: 'import secret from "secret"', importers: ['entry.js'] },
+    }, 'a.js')
+    expect(message).toContain('import "./a.js"')
+    expect(message).not.toContain('import "./data.js"')
+  })
+
+  it('follows a dynamic import when building the chain', async () => {
+    const message = await walk({
+      'entry.js': { code: 'export const p = import("mid.js")', importers: [], isEntry: true },
+      'mid.js': { code: 'import secret from "secret"', importers: [], dynamicImporters: ['entry.js'] },
+    }, 'mid.js')
+    expect(message).toContain('Trace:')
+    expect(message).toContain('entry.js')
+    expect(message).toContain('mid.js')
   })
 
   it('reports without a chain when the importer is itself an entry', async () => {

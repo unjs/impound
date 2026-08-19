@@ -439,6 +439,7 @@ function reportViolation(
 interface LazyModuleInfo {
   code?: string | null
   importers?: readonly string[]
+  dynamicImporters?: readonly string[]
   isEntry?: boolean
 }
 interface LazyGraphContext {
@@ -481,11 +482,13 @@ function buildLazyTrace(
     if (path.length > maxDepth) {
       continue
     }
-    if (ctx.getModuleInfo(current)?.isEntry) {
+    const info = ctx.getModuleInfo(current)
+    if (info?.isEntry) {
       bestPath = path
+      found = true
       break
     }
-    for (const parent of ctx.getModuleInfo(current)?.importers || []) {
+    for (const parent of [...info?.importers || [], ...info?.dynamicImporters || []]) {
       if (visited.has(parent)) {
         continue
       }
@@ -496,11 +499,14 @@ function buildLazyTrace(
         found = true
         break
       }
-      if (next.length > bestPath.length) {
-        bestPath = next
-      }
       queue.push([parent, next])
     }
+  }
+
+  // A path that never reached an entry is a truncated middle, and `formatTrace` would
+  // label its first step `(entry)`. Report no chain instead, as the eager path does.
+  if (!found) {
+    return [{ file: importer }]
   }
 
   // Reverse so it reads entry -> ... -> importer
@@ -518,7 +524,8 @@ function buildLazyTrace(
         const nextRelative = isAbsolute(nextFile) && cwd ? relative(cwd, nextFile) : nextFile
         for (const [specifier, loc] of lexImports(cache, file, code)) {
           const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(file.split('?')[0]!, '..', specifier) : specifier
-          if (resolved === nextFile || resolved === nextRelative || specifier.endsWith(nextRelative)) {
+          // The suffix match needs a path boundary, or `./data.js` matches `a.js`.
+          if (resolved === nextFile || resolved === nextRelative || specifier === nextRelative || specifier.endsWith(`/${nextRelative}`)) {
             step.import = specifier
             step.line = loc.line
             step.column = loc.column

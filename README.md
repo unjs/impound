@@ -86,7 +86,7 @@ violation actually happens.
 
 |  | `true` | `'lazy'` |
 |---|---|---|
-| Import chain | yes | yes |
+| Import chain | yes | yes, including dynamic imports |
 | Code snippet | yes | yes |
 | Snippet shows | original source | code as the bundler has it |
 | Per-module cost | parse + sourcemap + retain | none |
