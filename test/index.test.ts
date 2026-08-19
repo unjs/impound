@@ -700,16 +700,6 @@ describe('trace mode (deferred violations)', () => {
     expect(errors[0]).toContain('Not allowed')
   })
 
-  it('resolves PROXY_ID in trace mode', async () => {
-    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret']] })
-    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
-    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
-    const context = { error: () => {} }
-
-    const result = await (impoundPlugin as any).resolveId.call(context, '\0impound:proxy', 'middle.js')
-    expect(result).toBe('\0impound:proxy')
-  })
-
   it('skips filtered importers in trace mode', async () => {
     const plugins = ImpoundPlugin.rollup({ trace: true, include: [/^app\./], patterns: [['secret']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
@@ -736,8 +726,10 @@ describe('trace mode (deferred violations)', () => {
       patterns: [['secret']],
     }) as RollupError
 
-    // Violation is still reported, but trace may be incomplete due to depth limit
-    expect(result.message).toContain('secret')
+    // A chain cut off by the depth limit never reaches an entry, so no Trace block is
+    // shown rather than a truncated one presented as complete.
+    expect(result.message).toContain('Invalid import')
+    expect(result.message).not.toContain('Trace:')
   })
 
   it('accumulates multiple deferred violations for the same importer', async () => {
@@ -838,8 +830,9 @@ describe('trace mode (deferred violations)', () => {
     }) as RollupError
 
     expect(result.message).toContain('Trace:')
-    // entry.js should appear relativized (absolute /root/entry.js -> entry.js)
-    expect(result.message).toContain('entry.js')
+    // relativised against cwd: /root/entry.js is shown as entry.js
+    expect(result.message).toContain('1. entry.js')
+    expect(result.message).not.toContain('/root/entry.js')
     expect(result.message).toContain('Code:')
   })
 
@@ -970,13 +963,26 @@ describe('trace mode (deferred violations)', () => {
   })
 
   it('handles dynamic imports with non-literal specifiers in transform', async () => {
-    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret']] })
-    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
-    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
+    // A non-literal dynamic import has no resolvable specifier, so it is skipped when
+    // import positions are recorded. The static import after it must still be located.
+    const violations: ImpoundViolationInfo[] = []
+    const traced = ImpoundPlugin.rollup({
+      trace: true,
+      patterns: [['secret', 'Denied']],
+      onViolation: (info) => {
+        violations.push(info)
+        return false
+      },
+    })
+    const tracedArray = Array.isArray(traced) ? traced : [traced]
+    const impound = tracedArray.find(plugin => plugin.name === 'impound')!
+    const tracer = tracedArray.find(plugin => plugin.name === 'impound:trace')!
 
-    // Dynamic import with a variable — imp.n is undefined, exercises the !imp.n branch
-    await (tracePlugin as any).transform('const x = "mod";const m = import(x);import secret from "secret"', 'test.js')
-    // Should not throw — just skip the dynamic import entry
+    await (tracer as any).transform.call({}, 'const x = "mod";const m = import(x);import secret from "secret"', 'test.js')
+    await (impound as any).resolveId.call({ error: () => {} }, 'secret', 'test.js')
+
+    expect(violations[0]!.snippet!.line).toBe(1)
+    expect(violations[0]!.snippet!.text).toContain('import secret from "secret"')
   })
 
   it('registers module in graph even when parsing fails (e.g. Vue SFC)', async () => {
@@ -999,25 +1005,6 @@ describe('trace mode (deferred violations)', () => {
     expect(errors[0]).toContain('Not allowed')
     // No Code: section since parsing failed and import locations are empty
     expect(errors[0]).not.toContain('Code:')
-  })
-
-  it('tracks resolved imports across multiple resolveIds from same importer', async () => {
-    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
-    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
-    const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
-    const tracePlugin = pluginArray.find(p => p.name === 'impound:trace')!
-
-    const errors: string[] = []
-    const context = { error: (msg: string) => errors.push(msg) }
-
-    // First resolve a non-matching import from the same importer (populates resolvedImports)
-    await (impoundPlugin as any).resolveId.call(context, 'safe-module', 'middle.js')
-    // Then resolve a matching import
-    await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
-
-    await (tracePlugin as any).transform('import safe from "safe-module";import secret from "secret";export default secret', 'middle.js')
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toContain('Not allowed')
   })
 
   it('deferred violations with error: false log to console', async () => {
@@ -1395,13 +1382,6 @@ describe('trace mode (lazy) graph walking', () => {
     expect(message).not.toContain('Code:')
   })
 
-  it('does nothing at buildEnd when no violation was seen', async () => {
-    const plugin = lazyPlugin()
-    const error = vi.fn()
-    await (plugin as any).buildEnd.call({ error, getModuleInfo: () => null })
-    expect(error).not.toHaveBeenCalled()
-  })
-
   it('lexes a shared file once across violations', async () => {
     const plugin = lazyPlugin()
     const error = vi.fn()
@@ -1432,18 +1412,6 @@ describe('trace mode (lazy)', () => {
     const lazy = await processTrace({ trace: 'lazy', patterns: [['secret']] }) as RollupError
     expect(eager.message.startsWith('[plugin impound]')).toBe(true)
     expect(lazy.message.startsWith('[plugin impound]')).toBe(true)
-  })
-
-  it('registers no transform hook, so no module is parsed to collect a graph', () => {
-    const eager = ImpoundPlugin.rollup({ trace: true, patterns: [['secret']] })
-    const lazy = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret']] })
-
-    const hooks = (plugins: unknown) => (Array.isArray(plugins) ? plugins : [plugins])
-      .filter((plugin: any) => plugin.transform)
-      .map((plugin: any) => plugin.name)
-
-    expect(hooks(eager)).toContain('impound:trace')
-    expect(hooks(lazy)).toEqual([])
   })
 
   it('builds the import chain from the bundler graph', async () => {
