@@ -102,9 +102,9 @@ export interface ImpoundSharedOptions {
    * Enable import tracing and code snippets in violation reports.
    *
    * `true` parses every module and materialises its sourcemap, so snippets point at
-   * original source. `'lazy'` collects nothing and reads the bundler's graph at
-   * `buildEnd` instead, at the cost of snippets showing transformed code. Lazy needs
-   * `getModuleInfo`, so on other bundlers it reports the plain message.
+   * original source. `'lazy'` collects nothing and reads the bundler's own graph at
+   * `buildEnd` instead. Lazy needs a module graph, which every bundler but esbuild
+   * exposes; there it reports the plain message.
    */
   trace?: boolean | 'lazy'
   /**
@@ -446,6 +446,26 @@ interface LazyGraphContext {
   getModuleInfo: (id: string) => LazyModuleInfo | null | undefined
 }
 
+interface NativeModule {
+  resource?: string
+  originalSource?: () => { source: () => string | { toString: () => string } } | null
+}
+interface NativeGraph {
+  compilation?: {
+    errors?: Error[]
+    modules?: Iterable<NativeModule>
+    moduleGraph?: {
+      getIncomingConnections: (module: NativeModule) => Iterable<{ originModule?: NativeModule | null }>
+    }
+  }
+}
+
+/** A bundler graph reached through `getNativeBuildContext`, plus its error channel. */
+interface NativeLazyTarget {
+  graph: LazyGraphContext
+  addError?: (message: string) => void
+}
+
 /** Lex a module's imports once per reporting pass. Only modules on a violation's chain are read. */
 function lexImports(cache: Map<string, Map<string, ImportLocation>>, id: string, code: string): Map<string, ImportLocation> {
   const cached = cache.get(id)
@@ -539,6 +559,65 @@ function buildLazyTrace(
   }
 
   return trace
+}
+
+/**
+ * Adapt webpack's and rspack's `moduleGraph` to the same shape rollup's `getModuleInfo`
+ * gives, so the lazy walk works there too. `originalSource()` is the pre-transform
+ * source, so these snippets point at original code rather than transformed.
+ */
+function nativeGraphContext(native: NativeGraph | undefined, cwd: string | undefined): NativeLazyTarget | undefined {
+  const compilation = native?.compilation
+  const moduleGraph = compilation?.moduleGraph
+  if (!moduleGraph || !compilation?.modules) {
+    return undefined
+  }
+
+  const byId = new Map<string, NativeModule>()
+  for (const module of compilation.modules) {
+    const resource = module.resource
+    if (!resource) {
+      continue
+    }
+    byId.set(resource, module)
+    if (cwd && isAbsolute(resource)) {
+      byId.set(relative(cwd, resource), module)
+    }
+  }
+
+  const errors = compilation.errors
+  return {
+    // Match the eager path, which reports through the bundler rather than throwing.
+    addError: errors && ((message: string) => { errors.push(new Error(message)) }),
+    graph: {
+      getModuleInfo(id) {
+        const module = byId.get(id) || byId.get(id.split('?')[0]!)
+        if (!module) {
+          return null
+        }
+        const importers: string[] = []
+        let isEntry = false
+        for (const connection of moduleGraph.getIncomingConnections(module)) {
+        // A connection with no origin is an entry dependency.
+          if (!connection.originModule) {
+            isEntry = true
+            continue
+          }
+          if (connection.originModule.resource) {
+            importers.push(connection.originModule.resource)
+          }
+        }
+        let code: string | undefined
+        try {
+          code = module.originalSource?.()?.source()?.toString()
+        }
+        catch {
+        // A module with no readable source still gets a chain, just no frame.
+        }
+        return { code, importers, isEntry }
+      },
+    },
+  }
 }
 
 /** Enrich a held violation once the bundler's graph is complete. Nothing was collected earlier. */
@@ -882,7 +961,14 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         // `getModuleInfo` and `error` are not part of unplugin's build context, but the
         // underlying context supplies both on rollup, vite and rolldown.
         const ctx = this as UnpluginBuildContext & Partial<LazyGraphContext> & { error?: (msg: string) => never }
-        const canEnrich = typeof ctx.getModuleInfo === 'function'
+        // rollup, vite and rolldown hand us `getModuleInfo` directly. webpack and rspack
+        // keep the same information on `compilation.moduleGraph`, one layer down.
+        const native = typeof ctx.getModuleInfo === 'function'
+          ? undefined
+          : nativeGraphContext(ctx.getNativeBuildContext?.() as NativeGraph | undefined, cwd)
+        const graph: LazyGraphContext | undefined = typeof ctx.getModuleInfo === 'function'
+          ? ctx as LazyGraphContext
+          : native?.graph
         // Violations cluster in the same files, so their chains overlap.
         const cache = new Map<string, Map<string, ImportLocation>>()
 
@@ -891,14 +977,14 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
             ? console.error
             : typeof ctx.error === 'function'
               ? ctx.error.bind(ctx)
-              : (msg: string) => { throw new Error(msg) }
+              : native?.addError || ((msg: string) => { throw new Error(msg) })
 
-          if (canEnrich) {
-            await enrichAndReportLazy(ctx as LazyGraphContext, violation, maxTraceDepth, cwd, errorFn, cache)
+          if (graph) {
+            await enrichAndReportLazy(graph, violation, maxTraceDepth, cwd, errorFn, cache)
           }
           else {
-            // No module graph to read (webpack, rspack, esbuild). Report the plain message
-            // rather than inventing a trace: a single-step trace adds no Trace block.
+            // No module graph to read (esbuild). Report the plain message rather than
+            // inventing a trace: a single-step trace adds no Trace block.
             reportViolation(violation, [{ file: violation.relativeImporter }], undefined, cwd, errorFn, violation.warnedMessages)
           }
         }

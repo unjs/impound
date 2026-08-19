@@ -1103,6 +1103,39 @@ describe('denied modules with named imports', () => {
   })
 })
 
+describe('trace mode parity on a real build', () => {
+  // Same violation, same project, both modes. The report a developer sees should carry
+  // the same facts whichever mode produced it.
+  const files = {
+    'entry.js': 'import middle from "middle.js";console.log(middle)',
+    'middle.js': 'import secret from "secret";export default secret',
+  }
+
+  it('reports the same violation, chain and suggestions either way', async () => {
+    const [eager, lazy] = await Promise.all([
+      buildWithTrace(files, ['secret'], { trace: true, patterns: [['secret', 'Server-only', ['Use a server function']]] }),
+      buildWithTrace(files, ['secret'], { trace: 'lazy', patterns: [['secret', 'Server-only', ['Use a server function']]] }),
+    ]) as [RollupError, RollupError]
+
+    for (const { message } of [eager, lazy]) {
+      expect(message).toContain('Server-only [importing `secret` from `middle.js`]')
+      expect(message).toContain('1. entry.js')
+      expect(message).toContain('2. middle.js')
+      expect(message).toContain('import secret from "secret"')
+      expect(message).toContain('Use a server function')
+    }
+  })
+
+  it('attributes the error to the same plugin either way', async () => {
+    const [eager, lazy] = await Promise.all([
+      buildWithTrace(files, ['secret'], { trace: true, patterns: [['secret']] }),
+      buildWithTrace(files, ['secret'], { trace: 'lazy', patterns: [['secret']] }),
+    ]) as [RollupError, RollupError]
+    expect(eager.message.startsWith('[plugin impound]')).toBe(true)
+    expect(lazy.message.startsWith('[plugin impound]')).toBe(true)
+  })
+})
+
 describe('trace mode (lazy) graph walking', () => {
   // A fake graph is used here rather than a real build, because the shapes under test
   // (depth limits, diamonds, missing code) are fiddly to provoke through a bundler.

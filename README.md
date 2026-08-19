@@ -90,7 +90,7 @@ violation actually happens.
 | Code snippet | yes | yes |
 | Snippet shows | original source | code as the bundler has it |
 | Per-module cost | parse + sourcemap + retain | none |
-| Bundlers | all | rollup, vite, rolldown |
+| Bundlers | all | all except esbuild |
 
 Lazy reports from `buildEnd`, and a dev server only calls that when it shuts down, so
 keep `true` for dev:
@@ -102,7 +102,10 @@ ImpoundPlugin.vite({
 })
 ```
 
-On a bundler with no `getModuleInfo`, lazy reports the plain message with no chain or
+Lazy reads the graph through `getModuleInfo` on rollup, vite and rolldown, and through
+`compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from
+`originalSource()`, so it shows original rather than transformed code. esbuild exposes no
+module graph to a plugin, so there lazy reports the plain message with no chain or
 snippet.
 
 ## 💻 Development
