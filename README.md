@@ -75,6 +75,46 @@ Suggestions:
   - Move this import to a .server.ts file
 ```
 
+#### Choosing a trace mode
+
+`trace: true` records the import graph as modules are transformed. Every module gets
+parsed and its sourcemap built, so snippets can point at original source. A build with
+no violations pays for all of that and reads none of it.
+
+`trace: 'lazy'` records nothing, and reads the bundler's own module graph when a
+violation actually happens.
+
+|  | `true` | `'lazy'` |
+|---|---|---|
+| Import chain | yes | yes, including dynamic imports |
+| Code snippet | yes | yes |
+| Snippet shows | original source | original source on webpack and rspack, otherwise the code the bundler holds |
+| Per-module cost | parse + sourcemap + retain | none |
+| Bundlers | all | all except esbuild |
+
+Lazy reports from `buildEnd`, and a dev server only calls that when it shuts down, so
+keep `true` for dev:
+
+```js
+ImpoundPlugin.vite({
+  trace: isDev ? true : 'lazy',
+  patterns: [[/\.server$/, 'Server-only import']]
+})
+```
+
+A denied import is replaced by a proxy module. That proxy has only a default export,
+and `syntheticNamedExports` papers over it on Rollup alone: rolldown, webpack, rspack and
+esbuild ignore it. So on those, a named import from a denied module can still fail with
+an error naming `impound:proxy` before impound reports the real violation. It shows up
+when a build is allowed to continue past a violation, which means `error: false`, or
+lazy tracing, which reports at `buildEnd`.
+
+Lazy reads the graph through `getModuleInfo` on rollup, vite and rolldown, and through
+`compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from `originalSource()`,
+so it shows original rather than transformed code. esbuild exposes no
+module graph to a plugin, so there lazy reports the plain message with no chain or
+snippet.
+
 ## 💻 Development
 
 - Clone this repository
