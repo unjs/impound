@@ -448,7 +448,12 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       filter: { id: PROXY_ID_RE },
       handler(id: string) {
         if (id === PROXY_ID) {
-          return PROXY_CODE
+          // The proxy only has a default export, so a named import from a denied module
+          // fails the bundler's static export check. That error names `impound:proxy`
+          // rather than the offending import, and it can surface before impound's own
+          // report. `syntheticNamedExports` routes named imports through the default
+          // export, where the Proxy answers for any property.
+          return { code: PROXY_CODE, syntheticNamedExports: 'default' } as unknown as string
         }
       },
     },
