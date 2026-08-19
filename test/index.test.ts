@@ -1103,6 +1103,84 @@ describe('denied modules with named imports', () => {
   })
 })
 
+describe('trace mode (lazy) on webpack and rspack', () => {
+  // webpack is not a devDependency here (it pins an old `eslint-scope`, which the
+  // provenance check rejects), so this stands in the shape impound reads from
+  // `getNativeBuildContext`: `compilation.moduleGraph` plus `originalSource`.
+  const nativeContext = (errors: Error[]) => {
+    const mod = (resource: string, code: string) => ({
+      resource,
+      originalSource: () => ({ source: () => code }),
+    })
+    const entry = mod('/p/entry.js', 'import { loadAuth } from "./session.js"')
+    const session = mod('/p/session.js', 'import { getUsers } from "./queries.server"\nexport const loadAuth = getUsers')
+    const incoming = new Map<unknown, { originModule: unknown }[]>([
+      [entry, [{ originModule: null }]],
+      [session, [{ originModule: entry }]],
+    ])
+    return {
+      getNativeBuildContext: () => ({
+        framework: 'webpack',
+        compilation: {
+          errors,
+          modules: [entry, session],
+          moduleGraph: { getIncomingConnections: (m: unknown) => incoming.get(m) ?? [] },
+        },
+      }),
+    }
+  }
+
+  const report = async (trace: 'lazy') => {
+    const plugins = ImpoundPlugin.raw({ cwd: '/p', trace, patterns: [['queries.server', 'Server-only', ['Use a server function']]] }, { framework: 'webpack', versions: {}, webpack: { compiler: {} } } as any)
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    const plugin = array.find(p => p.name === 'impound')!
+    const errors: Error[] = []
+    const ctx = nativeContext(errors)
+    await (plugin as any).resolveId.call({ ...ctx, error: () => {} }, './queries.server', '/p/session.js')
+    await (plugin as any).buildEnd.call(ctx)
+    return errors.map(e => e.message).join('\n')
+  }
+
+  it('builds the chain from compilation.moduleGraph', async () => {
+    const message = await report('lazy')
+    expect(message).toContain('Server-only')
+    expect(message).toContain('1. entry.js')
+    expect(message).toContain('2. session.js')
+  })
+
+  it('takes the snippet from originalSource, so it shows pre-transform code', async () => {
+    const message = await report('lazy')
+    expect(message).toContain('import { getUsers } from "./queries.server"')
+    expect(message).toContain('^')
+  })
+
+  it('reports through compilation.errors rather than throwing', async () => {
+    await expect(report('lazy')).resolves.toContain('Server-only')
+  })
+
+  it('skips modules with no resource and unknown ids', async () => {
+    const plugins = ImpoundPlugin.raw({ cwd: '/p', trace: 'lazy', patterns: [['queries.server', 'Server-only']] }, { framework: 'webpack', versions: {}, webpack: { compiler: {} } } as any)
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    const plugin = array.find(p => p.name === 'impound')!
+    const errors: Error[] = []
+    // A concatenated or runtime module has no `resource`, and the importer is a file the
+    // index never saw, so every lookup misses.
+    const ctx = {
+      getNativeBuildContext: () => ({
+        framework: 'webpack',
+        compilation: {
+          errors,
+          modules: [{ originalSource: () => null }],
+          moduleGraph: { getIncomingConnections: () => [] },
+        },
+      }),
+    }
+    await (plugin as any).resolveId.call({ ...ctx, error: () => {} }, './queries.server', '/p/unknown.js')
+    await (plugin as any).buildEnd.call(ctx)
+    expect(errors.map(e => e.message).join('')).toContain('Server-only')
+  })
+})
+
 describe('trace mode parity on a real build', () => {
   // Same violation, same project, both modes. The report a developer sees should carry
   // the same facts whichever mode produced it.

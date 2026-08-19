@@ -103,8 +103,8 @@ ImpoundPlugin.vite({
 ```
 
 Lazy reads the graph through `getModuleInfo` on rollup, vite and rolldown, and through
-`compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from
-`originalSource()`, so it shows original rather than transformed code. esbuild exposes no
+`compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from `originalSource()`,
+so it shows original rather than transformed code. esbuild exposes no
 module graph to a plugin, so there lazy reports the plain message with no chain or
 snippet.
 
