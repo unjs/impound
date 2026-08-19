@@ -1103,6 +1103,120 @@ describe('denied modules with named imports', () => {
   })
 })
 
+describe('trace mode (lazy) graph walking', () => {
+  // A fake graph is used here rather than a real build, because the shapes under test
+  // (depth limits, diamonds, missing code) are fiddly to provoke through a bundler.
+  const lazyPlugin = () => {
+    const plugins = ImpoundPlugin.rollup({ trace: 'lazy', maxTraceDepth: 3, patterns: [['secret', 'Not allowed']] })
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    return array.find(plugin => plugin.name === 'impound')!
+  }
+
+  const walk = async (graph: Record<string, { code?: string, importers?: string[], isEntry?: boolean }>, importer: string) => {
+    const plugin = lazyPlugin()
+    const error = vi.fn()
+    const ctx = { error, getModuleInfo: (id: string) => graph[id] ?? null }
+    await (plugin as any).resolveId.call(ctx, 'secret', importer)
+    await (plugin as any).buildEnd.call(ctx)
+    return error.mock.calls[0]?.[0] as string | undefined
+  }
+
+  it('walks a chain deeper than one hop', async () => {
+    const message = await walk({
+      'entry.js': { code: 'import "a.js"', importers: [], isEntry: true },
+      'a.js': { code: 'import "b.js"', importers: ['entry.js'] },
+      'b.js': { code: 'import secret from "secret"', importers: ['a.js'] },
+    }, 'b.js')
+    expect(message).toContain('1. entry.js')
+    expect(message).toContain('2. a.js')
+    expect(message).toContain('3. b.js')
+  })
+
+  it('does not revisit a module reachable by two paths', async () => {
+    const message = await walk({
+      'entry.js': { code: 'import "left.js";import "right.js"', importers: [], isEntry: true },
+      'left.js': { code: 'import "shared.js"', importers: ['entry.js'] },
+      'right.js': { code: 'import "shared.js"', importers: ['entry.js'] },
+      'shared.js': { code: 'import secret from "secret"', importers: ['left.js', 'right.js'] },
+    }, 'shared.js')
+    expect(message).toContain('Trace:')
+    expect(message).toContain('entry.js')
+    // one path through, not both
+    expect(message).not.toContain('right.js')
+  })
+
+  it('does not loop when two modules import each other', async () => {
+    const message = await walk({
+      'entry.js': { code: 'import "a.js"', importers: [], isEntry: true },
+      'a.js': { code: 'import "b.js"', importers: ['b.js', 'entry.js'] },
+      'b.js': { code: 'import secret from "secret"', importers: ['a.js'] },
+    }, 'b.js')
+    expect(message).toContain('Not allowed')
+    expect(message).toContain('entry.js')
+  })
+
+  it('stops at maxTraceDepth instead of walking forever', async () => {
+    const graph: Record<string, any> = { 'entry.js': { code: '', importers: [], isEntry: true } }
+    let previous = 'entry.js'
+    for (let i = 0; i < 8; i++) {
+      const id = `m${i}.js`
+      graph[id] = { code: `import "${previous}"`, importers: [previous] }
+      previous = id
+    }
+    graph[previous].code = 'import secret from "secret"'
+    const message = await walk(graph, previous)
+    expect(message).toContain('Not allowed')
+    expect(message!.split('\n').filter(line => /^\s+\d+\./.test(line)).length).toBeLessThanOrEqual(4)
+  })
+
+  it('reports without a chain when the importer is itself an entry', async () => {
+    const message = await walk({
+      'entry.js': { code: 'import secret from "secret"', importers: [], isEntry: true },
+    }, 'entry.js')
+    expect(message).toContain('Not allowed')
+    expect(message).not.toContain('Trace:')
+  })
+
+  it('reports without a snippet when the module has no code', async () => {
+    const message = await walk({
+      'entry.js': { importers: [], isEntry: true },
+      'opaque.js': { importers: ['entry.js'] },
+    }, 'opaque.js')
+    expect(message).toContain('Not allowed')
+    expect(message).not.toContain('Code:')
+  })
+
+  it('does nothing at buildEnd when no violation was seen', async () => {
+    const plugin = lazyPlugin()
+    const error = vi.fn()
+    await (plugin as any).buildEnd.call({ error, getModuleInfo: () => null })
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('lexes a shared file once across violations', async () => {
+    const plugin = lazyPlugin()
+    const error = vi.fn()
+    let reads = 0
+    const graph: Record<string, any> = {
+      'entry.js': { code: 'import "shared.js"', importers: [], isEntry: true },
+      'shared.js': { code: 'import a from "secret";import b from "other"', importers: ['entry.js'] },
+    }
+    const ctx = {
+      error,
+      getModuleInfo: (id: string) => {
+        reads++
+        return graph[id] ?? null
+      },
+    }
+    await (plugin as any).resolveId.call(ctx, 'secret', 'shared.js')
+    await (plugin as any).resolveId.call(ctx, 'secret', 'shared.js')
+    reads = 0
+    await (plugin as any).buildEnd.call(ctx)
+    expect(error).toHaveBeenCalled()
+    expect(reads).toBeGreaterThan(0)
+  })
+})
+
 describe('trace mode (lazy)', () => {
   it('reports under the same plugin name as eager mode', async () => {
     const eager = await processTrace({ trace: true, patterns: [['secret']] }) as RollupError

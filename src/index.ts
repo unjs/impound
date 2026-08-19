@@ -101,18 +101,14 @@ export interface ImpoundSharedOptions {
   /**
    * Enable import tracing and code snippets in violation reports.
    *
-   * - `true` collects the import graph as modules are transformed. Every module is
-   *   parsed and its sourcemap is materialised, so snippets can point at original
-   *   source. A build with no violations pays that cost and reads none of it.
-   * - `'lazy'` collects nothing up front. Violations are held until `buildEnd`, then
-   *   enriched from the bundler's own module graph. Snippets show transformed code
-   *   rather than original source, because a sourcemap is only reachable from inside
-   *   a transform. Needs `getModuleInfo`, so it applies to rollup, vite and rolldown;
-   *   elsewhere it reports the plain message.
+   * `true` parses every module and materialises its sourcemap, so snippets point at
+   * original source. `'lazy'` collects nothing and reads the bundler's graph at
+   * `buildEnd` instead, at the cost of snippets showing transformed code. Lazy needs
+   * `getModuleInfo`, so on other bundlers it reports the plain message.
    */
   trace?: boolean | 'lazy'
   /**
-   * Maximum depth for import traces. Only used when `trace` is `true`.
+   * Maximum depth for import traces. Only used when `trace` is enabled.
    * @default 20
    */
   maxTraceDepth?: number
@@ -209,11 +205,7 @@ function generateSnippet(code: string, line: number, column: number, context = 2
   return result.join('\n')
 }
 
-/**
- * Locate the import statement for a denied specifier inside its importer.
- * Tries the raw specifier first, then falls back to matching by resolved target,
- * because bundlers may hand `resolveId` an already-resolved id.
- */
+/** Locate a denied specifier's import statement, by raw specifier then by resolved target. */
 function findImportLocation(
   imports: Map<string, ImportLocation>,
   rawId: string,
@@ -471,13 +463,7 @@ function lexImports(cache: Map<string, Map<string, ImportLocation>>, id: string,
   return locations
 }
 
-/**
- * Walk the bundler's own reverse graph from the importer back to an entry.
- *
- * The eager path has to scan every module it has seen for one that imports the current
- * file. `importers` gives that edge directly, so this is proportional to the chain rather
- * than to the size of the build.
- */
+/** Build an import trace by walking `importers` backwards, rather than a graph of our own. */
 function buildLazyTrace(
   ctx: LazyGraphContext,
   importer: string,
@@ -548,20 +534,17 @@ function buildLazyTrace(
   return trace
 }
 
-/**
- * Enrich a held violation from the bundler's module graph, at the point where that
- * graph is complete. Nothing was collected while the build ran.
- */
+/** Enrich a held violation once the bundler's graph is complete. Nothing was collected earlier. */
 async function enrichAndReportLazy(
   ctx: LazyGraphContext,
   violation: PendingViolation,
   maxTraceDepth: number,
   cwd: string | undefined,
   errorFn: (msg: string) => void,
+  cache: Map<string, Map<string, ImportLocation>>,
 ): Promise<void> {
   await init
 
-  const cache = new Map<string, Map<string, ImportLocation>>()
   const trace = buildLazyTrace(ctx, violation.importer, maxTraceDepth, cwd, cache)
 
   let snippet: ImpoundSnippet | undefined
@@ -569,9 +552,7 @@ async function enrichAndReportLazy(
   if (code) {
     const loc = findImportLocation(lexImports(cache, violation.importer, code), violation.rawId, violation.id, violation.importer, cwd)
     if (loc) {
-      // No sourcemap here: it is only reachable from inside a transform for the module
-      // being transformed, and skipping that is the whole point. The frame shows the
-      // code the bundler is working with.
+      // No sourcemap: it is only reachable from inside a transform, which is what this skips.
       snippet = { text: generateSnippet(code, loc.line, loc.column), line: loc.line, column: loc.column }
     }
   }
@@ -581,8 +562,7 @@ async function enrichAndReportLazy(
 
 export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const matchers = 'matchers' in globalOptions ? globalOptions.matchers : [globalOptions]
-  // 'eager' collects the graph during transform; 'lazy' collects nothing and reads the
-  // bundler's own graph at buildEnd. See the `trace` option for the tradeoff.
+  // 'eager' collects the graph during transform, 'lazy' reads the bundler's at buildEnd.
   const traceMode: 'off' | 'eager' | 'lazy' = globalOptions.trace === 'lazy'
     ? 'lazy'
     : globalOptions.trace === true ? 'eager' : 'off'
@@ -626,11 +606,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       filter: { id: PROXY_ID_RE },
       handler(id: string) {
         if (id === PROXY_ID) {
-          // The proxy only has a default export, so a named import from a denied module
-          // fails the bundler's static export check. That error names `impound:proxy`
-          // rather than the offending import, and it can surface before impound's own
-          // report. `syntheticNamedExports` routes named imports through the default
-          // export, where the Proxy answers for any property.
+          // Named imports from the proxy would fail the bundler's export check, and that
+          // error names `impound:proxy` instead of the offending import.
           return { code: PROXY_CODE, syntheticNamedExports: 'default' } as unknown as string
         }
       },
@@ -881,11 +858,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   }
 
   if (traceMode === 'lazy') {
-    // Hangs off the main plugin rather than a second one, so a violation is still
-    // attributed to `impound` in the bundler's error output. There is deliberately no
-    // transform hook: nothing is parsed, no sourcemap is forced, and nothing is
-    // retained. Everything a report needs is already in the bundler's module graph by
-    // the time this runs.
+    // On the main plugin so violations stay attributed to `impound`. No transform hook:
+    // nothing is parsed, no sourcemap forced, nothing retained.
     Object.assign(plugins[0]!, {
       async buildEnd(this: UnpluginBuildContext) {
         if (pendingViolations.size === 0) {
@@ -902,6 +876,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         // underlying context supplies both on rollup, vite and rolldown.
         const ctx = this as UnpluginBuildContext & Partial<LazyGraphContext> & { error?: (msg: string) => never }
         const canEnrich = typeof ctx.getModuleInfo === 'function'
+        // Violations cluster in the same files, so their chains overlap.
+        const cache = new Map<string, Map<string, ImportLocation>>()
 
         for (const violation of held) {
           const errorFn = violation.useConsoleError
@@ -911,7 +887,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
               : (msg: string) => { throw new Error(msg) }
 
           if (canEnrich) {
-            await enrichAndReportLazy(ctx as LazyGraphContext, violation, maxTraceDepth, cwd, errorFn)
+            await enrichAndReportLazy(ctx as LazyGraphContext, violation, maxTraceDepth, cwd, errorFn, cache)
           }
           else {
             // No module graph to read (webpack, rspack, esbuild). Report the plain message
