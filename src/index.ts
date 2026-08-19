@@ -103,8 +103,13 @@ export interface ImpoundSharedOptions {
    *
    * `true` parses every module and materialises its sourcemap, so snippets point at
    * original source. `'lazy'` collects nothing and reads the bundler's own graph at
-   * `buildEnd` instead. Lazy needs a module graph, which every bundler but esbuild
-   * exposes; there it reports the plain message.
+   * `buildEnd` instead.
+   *
+   * Use `'lazy'` for builds and keep `true` for a dev server: a dev server calls
+   * `buildEnd` when it shuts down, so violations would go unreported for the session.
+   *
+   * Lazy needs a module graph, which every bundler but esbuild exposes; there it
+   * reports the plain message.
    */
   trace?: boolean | 'lazy'
   /**
