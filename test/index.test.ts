@@ -59,7 +59,7 @@ describe('impound plugin', () => {
 
   it('deduplicates warnings by default (warn: once)', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    // Two patterns that both match 'bar' — same message would be logged twice without dedup
+    // Two patterns that both match 'bar'; same message would be logged twice without dedup
     await process(code('bar'), { patterns: [['bar'], [/^bar$/]], error: false })
     expect(errorSpy).toHaveBeenCalledTimes(1)
     errorSpy.mockRestore()
@@ -67,7 +67,7 @@ describe('impound plugin', () => {
 
   it('logs all warnings when warn is set to always', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    // Two patterns that both match 'bar' — both log without dedup
+    // Two patterns that both match 'bar'; both log without dedup
     await process(code('bar'), { patterns: [['bar'], [/^bar$/]], error: false, warn: 'always' })
     expect(errorSpy).toHaveBeenCalledTimes(2)
     errorSpy.mockRestore()
@@ -207,6 +207,44 @@ describe('trace mode', () => {
     expect(result.message).toContain('Trace:')
     expect(result.message).toContain('entry.js')
     expect(result.message).toContain('middle.js')
+  })
+
+  it('traces through importers outside the include filter', async () => {
+    const result = await processTrace({
+      trace: true,
+      include: [/middle/],
+      patterns: [['secret']],
+    }) as RollupError
+    expect(result.message).toContain('Trace:')
+    expect(result.message).toContain('entry.js')
+    expect(result.message).toContain('(entry)')
+  })
+
+  it('records relative import edges for the trace', async () => {
+    const files: Record<string, string> = {
+      'entry.js': 'import "./middle.js"',
+      'middle.js': 'import secret from "secret";console.log(secret)',
+    }
+    const violations: ImpoundViolationInfo[] = []
+    await rollup({
+      input: 'entry.js',
+      onwarn: () => {},
+      plugins: [
+        ImpoundPlugin.rollup({ trace: true, patterns: [['secret']], error: false, onViolation: info => void violations.push(info) }),
+        {
+          name: 'files',
+          resolveId: (id: string) => {
+            const clean = id.replace('./', '')
+            return (clean in files || id === 'secret') ? clean : undefined
+          },
+          load: (id: string) => files[id] ?? 'export default 1',
+        },
+      ],
+    })
+    expect(violations[0]!.trace).toMatchObject([
+      { file: 'entry.js', import: './middle.js' },
+      { file: 'middle.js' },
+    ])
   })
 
   it('includes code snippet in violation', async () => {
@@ -353,11 +391,9 @@ describe('trace mode', () => {
       patterns: [['secret']],
     }, [sfcPlugin]) as RollupError
 
-    // The snippet should show the ORIGINAL source (with <script> tag), not the transformed JS
     expect(result.message).toContain('Code:')
     expect(result.message).toContain('<script>')
     expect(result.message).toContain('import secret from "secret"')
-    // Line 2 in the original source
     expect(result.message).toMatch(/> 2 \|/)
   })
 
@@ -396,7 +432,6 @@ describe('trace mode', () => {
 
     expect(violations).toHaveLength(1)
     expect(violations[0]!.snippet).toBeDefined()
-    // Snippet line should be 2 (original position), not 1 (transformed position)
     expect(violations[0]!.snippet!.line).toBe(2)
   })
 
@@ -435,7 +470,6 @@ describe('trace mode', () => {
 
     expect(violations).toHaveLength(1)
     expect(violations[0]!.snippet).toBeDefined()
-    // Should still map to line 2 via the source map positions
     expect(violations[0]!.snippet!.line).toBe(2)
   })
 
@@ -443,7 +477,7 @@ describe('trace mode', () => {
     const originalSource = '// original\nimport secret from "secret"\nexport default {}'
     const transformedSource = 'import secret from "secret";\nexport default {};'
 
-    // Source map with empty mappings — no position data
+    // Source map with empty mappings; no position data
     const sourceMap = {
       version: 3,
       sources: ['middle.js'],
@@ -475,8 +509,6 @@ describe('trace mode', () => {
 
     expect(violations).toHaveLength(1)
     expect(violations[0]!.snippet).toBeDefined()
-    // With empty mappings, getCombinedSourcemap still collapses to an identity map
-    // so the snippet should still work (falling back to transformed positions)
     expect(violations[0]!.snippet!.line).toBeGreaterThan(0)
   })
 
@@ -491,7 +523,7 @@ describe('trace mode', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    // Base transform — no getCombinedSourcemap available
+    // Base transform; no getCombinedSourcemap available
     const transformFn = typeof tracePlugin.transform === 'function' ? tracePlugin.transform : (tracePlugin.transform as any)?.handler
     await transformFn.call({}, 'import secret from "secret"\nexport default secret', 'middle.js')
     const resolveIdFn = typeof impoundPlugin.resolveId === 'function' ? impoundPlugin.resolveId : (impoundPlugin.resolveId as any)?.handler
@@ -514,7 +546,7 @@ describe('trace mode', () => {
     const originalCode = '// original header\nimport secret from "secret"\nexport default {}'
 
     // Source map has sourcesContent for source index 0, but the mapping points to
-    // source index 1 which has null content — sourceContentFor returns null for that source,
+    // source index 1 which has null content; sourceContentFor returns null for that source,
     // so the fallback to originalCode (from sourcesContent[0]) should be used.
     const traceContext = {
       getCombinedSourcemap: () => ({
@@ -533,7 +565,6 @@ describe('trace mode', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Code:')
-    // Falls back to originalCode (sourcesContent[0])
     expect(errors[0]).toContain('// original header')
   })
 
@@ -549,15 +580,15 @@ describe('trace mode', () => {
     const originalCode = '// original\nimport secret from "secret"\nexport default {}'
 
     // Provide getCombinedSourcemap with sourcesContent (so originalCode is set)
-    // but mappings that don't include a source index — originalPositionFor returns null source
+    // but mappings that don't include a source index; originalPositionFor returns null source
     const traceContext = {
       getCombinedSourcemap: () => ({
         version: 3,
         sources: ['middle.js'],
         sourcesContent: [originalCode],
-        // "AACA" includes source index 0 — to get null source we need segments without source info
+        // "AACA" includes source index 0; to get null source we need segments without source info
         // An empty VLQ segment with only 1 field (generated column) has no source mapping
-        // VLQ "A" = [0] — only generated column, no source info
+        // VLQ "A" = [0]; only generated column, no source info
         mappings: 'A',
         names: [],
       }),
@@ -568,7 +599,6 @@ describe('trace mode', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Code:')
-    // originalPositionFor returns null line → falls back to transformed code (line 1)
     expect(errors[0]).toMatch(/> 1 \|/)
   })
 
@@ -590,7 +620,6 @@ describe('trace mode', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Code:')
-    // Falls back to transformed code positions
     expect(errors[0]).toContain('import secret from "secret"')
   })
 
@@ -603,7 +632,7 @@ describe('trace mode', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    // Source map has mappings but empty sourcesContent — originalCode won't be set,
+    // Source map has mappings but empty sourcesContent; originalCode won't be set,
     // and sourceContentFor will return null
     const traceContext = {
       getCombinedSourcemap: () => ({
@@ -620,8 +649,6 @@ describe('trace mode', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Code:')
-    // Falls back to transformed code since both sourceContentFor and originalCode are unavailable
-    // The mapped position (line 2) is still used
     expect(errors[0]).toMatch(/> 2 \|/)
     expect(errors[0]).toContain('export default {}')
   })
@@ -639,7 +666,7 @@ describe('trace mode', () => {
       getCombinedSourcemap: () => ({
         version: 3,
         sources: [],
-        // No mappings field — sourceMap should not be stored
+        // No mappings field; sourceMap should not be stored
       }),
     }
 
@@ -648,7 +675,6 @@ describe('trace mode', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Code:')
-    // Falls back to transformed code
     expect(errors[0]).toContain('import secret from "secret"')
   })
 })
@@ -664,11 +690,10 @@ describe('trace mode (deferred violations)', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    // Mark entry
     await (impoundPlugin as any).resolveId.call(context, 'middle.js', undefined, { isEntry: true })
     await (tracePlugin as any).resolveId.call(context, 'middle.js', undefined, { isEntry: true })
 
-    // resolveId BEFORE transform — violation is deferred
+    // resolveId BEFORE transform; violation is deferred
     const result = await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
     expect(result).toBe('\0impound:proxy')
     expect(errors).toHaveLength(0)
@@ -695,10 +720,10 @@ describe('trace mode (deferred violations)', () => {
       error: (msg: string) => errors.push(msg),
     }
 
-    // Transform first — populates module graph
+    // Transform first; populates module graph
     await (tracePlugin as any).transform('import secret from "secret";export default secret', 'middle.js')
 
-    // resolveId finds importer in module graph — reports immediately with snippet
+    // resolveId finds importer in module graph; reports immediately with snippet
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
 
     expect(errors).toHaveLength(1)
@@ -717,11 +742,11 @@ describe('trace mode (deferred violations)', () => {
       error: (msg: string) => errors.push(msg),
     }
 
-    // resolveId with relative importer — deferred under key 'middle.js'
+    // resolveId with relative importer; deferred under key 'middle.js'
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
     expect(errors).toHaveLength(0)
 
-    // transform with absolute path — candidate keys include relative form, so flush works
+    // transform with absolute path; candidate keys include relative form, so flush works
     await (tracePlugin as any).transform('import secret from "secret";export default secret', '/root/middle.js')
 
     expect(errors).toHaveLength(1)
@@ -740,7 +765,7 @@ describe('trace mode (deferred violations)', () => {
       error: (msg: string) => errors.push(msg),
     }
 
-    // resolveId with bare importer — deferred under key 'app.vue'
+    // resolveId with bare importer; deferred under key 'app.vue'
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'app.vue')
     expect(errors).toHaveLength(0)
 
@@ -758,7 +783,7 @@ describe('trace mode (deferred violations)', () => {
     const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
     const context = { error: () => {} }
 
-    // 'other.js' doesn't match include filter — should return undefined (no match)
+    // 'other.js' doesn't match include filter; should return undefined (no match)
     const result = await (impoundPlugin as any).resolveId.call(context, 'secret', 'other.js')
     expect(result).toBeUndefined()
   })
@@ -778,8 +803,7 @@ describe('trace mode (deferred violations)', () => {
       patterns: [['secret']],
     }) as RollupError
 
-    // A chain cut off by the depth limit never reaches an entry, so no Trace block is
-    // shown rather than a truncated one presented as complete.
+    // A chain cut off by the depth limit never reaches an entry.
     expect(result.message).toContain('Invalid import')
     expect(result.message).not.toContain('Trace:')
   })
@@ -793,12 +817,11 @@ describe('trace mode (deferred violations)', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    // Two violations from the same importer — both deferred
+    // Two violations from the same importer; both deferred
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
     await (impoundPlugin as any).resolveId.call(context, 'other', 'middle.js')
     expect(errors).toHaveLength(0)
 
-    // Transform flushes both
     await (tracePlugin as any).transform('import secret from "secret";import other from "other";export default secret', 'middle.js')
     expect(errors).toHaveLength(2)
   })
@@ -816,7 +839,6 @@ describe('trace mode (deferred violations)', () => {
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
     await (tracePlugin as any).transform('import secret from "secret";export default secret', 'middle.js')
 
-    // Both patterns match and warn: always means no dedup
     expect(errorSpy).toHaveBeenCalledTimes(2)
     errorSpy.mockRestore()
   })
@@ -837,7 +859,6 @@ describe('trace mode (deferred violations)', () => {
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Not allowed')
-    // No Code: section since the import location wasn't found
     expect(errors[0]).not.toContain('Code:')
   })
 
@@ -867,8 +888,6 @@ describe('trace mode (deferred violations)', () => {
   })
 
   it('formats trace with cwd and absolute step.file paths', async () => {
-    // Exercises formatTrace line 263: cwd && isAbsolute(step.file) => true
-    // and line 264: step.line != null => false (entry has no graphEntry so no line info)
     const files: Record<string, string> = {
       '/root/entry.js': 'import middle from "/root/middle.js";console.log(middle)',
       '/root/middle.js': 'import secret from "secret";export default secret',
@@ -889,9 +908,8 @@ describe('trace mode (deferred violations)', () => {
   })
 
   it('formats trace step without line info when graphEntry has no matching specifier', async () => {
-    // Entry's graphEntry has an empty import map (no matching specifier for "middle.js"),
-    // so the trace step for entry.js has no line/column info.
-    // This exercises formatTrace line 271 false branch: step.line == null → empty loc string
+    // The entry's import map has no matching specifier for "middle.js", so its trace step
+    // carries no line or column.
     const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
     const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
@@ -902,7 +920,7 @@ describe('trace mode (deferred violations)', () => {
 
     await (tracePlugin as any).resolveId('entry.js', undefined, { isEntry: true })
 
-    // Transform entry with no imports — graphEntry exists but has empty import map
+    // Transform entry with no imports; graphEntry exists but has empty import map
     await (tracePlugin as any).transform('console.log("no imports")', 'entry.js')
     // Track entry.js -> middle.js in resolvedImports
     await (impoundPlugin as any).resolveId.call(context, 'middle.js', 'entry.js')
@@ -912,16 +930,14 @@ describe('trace mode (deferred violations)', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Trace:')
-    // entry.js step has no line info — formatTrace produces "entry.js (entry)" without :line:col
+    // entry.js step has no line info; formatTrace produces "entry.js (entry)" without :line:col
     expect(errors[0]).toMatch(/entry\.js \(entry\)/)
     expect(errors[0]).not.toMatch(/entry\.js:\d/)
   })
 
   it('formats trace without cwd', async () => {
-    // Exercises formatTrace line 263: cwd falsy => step.file used as-is
     const result = await processTrace({
       trace: true,
-      // No cwd
       patterns: [['secret', 'Not allowed']],
     }) as RollupError
 
@@ -956,7 +972,7 @@ describe('trace mode (deferred violations)', () => {
   })
 
   it('handles fallback when no specifier matches the resolved id', async () => {
-    // The fallback loop runs but no specifier matches — snippet remains undefined
+    // The fallback loop runs but no specifier matches; snippet remains undefined
     const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [[/secret/, 'Not allowed']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
     const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
@@ -972,12 +988,10 @@ describe('trace mode (deferred violations)', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Not allowed')
-    // No Code: since no specifier in the fallback matched
     expect(errors[0]).not.toContain('Code:')
   })
 
   it('finds snippet via fallback without cwd', async () => {
-    // Exercises the fallback path where cwd is undefined
     const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [[/server\/api/, 'Not allowed']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
     const impoundPlugin = pluginArray.find(p => p.name === 'impound')!
@@ -1048,14 +1062,13 @@ describe('trace mode (deferred violations)', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    // Transform with unparseable SFC content — parse will fail
+    // Transform with unparseable SFC content; parse will fail
     await (tracePlugin as any).transform('<script setup>\nimport secret from "secret"\n</script>', 'app.vue')
 
     // resolveId should find the importer in the graph and report immediately
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'app.vue')
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('Not allowed')
-    // No Code: section since parsing failed and import locations are empty
     expect(errors[0]).not.toContain('Code:')
   })
 
@@ -1102,7 +1115,7 @@ describe('trace mode (deferred violations)', () => {
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'b.js')
     expect(errorSpy).toHaveBeenCalledTimes(2)
 
-    // Third: re-resolve 'secret' from a.js — immediate path, same message as first.
+    // Third: re-resolve 'secret' from a.js; immediate path, same message as first.
     // Should be deduped because the deferred flush used the matcher's warnedMessages set.
     await (impoundPlugin as any).resolveId.call(context, 'secret', 'a.js')
     expect(errorSpy).toHaveBeenCalledTimes(2) // still 2, deduped
@@ -1112,10 +1125,9 @@ describe('trace mode (deferred violations)', () => {
 })
 
 describe('denied modules with named imports', () => {
-  // The proxy substituted for a denied import only has a default export, so a named
-  // import from it used to fail the bundler's static export check. That error names
-  // `impound:proxy` instead of the offending import, and when the build is allowed to
-  // continue past the violation it can surface ahead of impound's own report.
+  // The proxy substituted for a denied import has only a default export, so a named
+  // import from it can fail the bundler's static export check with an error naming
+  // `impound:proxy` rather than the offending import.
   const files = {
     'entry.js': 'import { helper } from "middle.js";console.log(helper)',
     'middle.js': 'import { getUsers } from "secret";export const helper = getUsers',
@@ -1143,9 +1155,8 @@ describe('denied modules with named imports', () => {
 })
 
 describe('trace mode (lazy) on webpack and rspack', () => {
-  // webpack is not a devDependency here (it pins an old `eslint-scope`, which the
-  // provenance check rejects), so this stands in the shape impound reads from
-  // `getNativeBuildContext`: `compilation.moduleGraph` plus `originalSource`.
+  // The shape impound reads from `getNativeBuildContext` on webpack and rspack:
+  // `compilation.moduleGraph` plus `originalSource`.
   const nativeContext = (errors: Error[]) => {
     const mod = (resource: string, code: string) => ({
       resource,
@@ -1246,8 +1257,6 @@ describe('trace mode (lazy) on webpack and rspack', () => {
 })
 
 describe('reporting when the build is already failing', () => {
-  // Driven through the hooks: whether a real build buffers the violation before an
-  // unrelated plugin throws is a race, so a build cannot pin this down.
   const lazy = () => {
     const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Denied']] })
     const array = Array.isArray(plugins) ? plugins : [plugins]
@@ -1314,8 +1323,6 @@ describe('locating a denied import the bundler pre-resolved', () => {
 })
 
 describe('trace mode parity on a real build', () => {
-  // Same violation, same project, both modes. The report a developer sees should carry
-  // the same facts whichever mode produced it.
   const files = {
     'entry.js': 'import middle from "middle.js";console.log(middle)',
     'middle.js': 'import secret from "secret";export default secret',
@@ -1347,8 +1354,6 @@ describe('trace mode parity on a real build', () => {
 })
 
 describe('trace mode (lazy) graph walking', () => {
-  // A fake graph is used here rather than a real build, because the shapes under test
-  // (depth limits, diamonds, missing code) are fiddly to provoke through a bundler.
   const lazyPlugin = () => {
     const plugins = ImpoundPlugin.rollup({ trace: 'lazy', maxTraceDepth: 3, patterns: [['secret', 'Not allowed']] })
     const array = Array.isArray(plugins) ? plugins : [plugins]
@@ -1384,7 +1389,6 @@ describe('trace mode (lazy) graph walking', () => {
     }, 'shared.js')
     expect(message).toContain('Trace:')
     expect(message).toContain('entry.js')
-    // one path through, not both
     expect(message).not.toContain('right.js')
   })
 
@@ -1409,7 +1413,6 @@ describe('trace mode (lazy) graph walking', () => {
     graph[previous].code = 'import secret from "secret"'
     const message = await walk(graph, previous)
     expect(message).toContain('Not allowed')
-    // A truncated middle would name a non-entry module `(entry)`. Report no chain.
     expect(message).not.toContain('Trace:')
   })
 

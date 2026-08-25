@@ -153,7 +153,7 @@ interface PendingViolation {
   message: string
   suggestions?: string[]
   options: ImpoundMatcherOptions
-  /** Bound at resolveId for the eager path. The lazy path reports from `buildEnd`, so it binds there instead. */
+  /** Set when the violation is reported from `resolveId`; unset when reporting is deferred to `buildEnd`. */
   errorFn?: (msg: string) => void
   useConsoleError: boolean
   warnedMessages: Set<string> | undefined
@@ -280,8 +280,8 @@ function buildTrace(graph: TraceGraph, importer: string, maxDepth: number): Impo
     }
   }
 
-  // A path that never reached an entry is a truncated middle, and `formatTrace` would
-  // label its first step `(entry)`. Report no chain instead.
+  // A path that never reached an entry is a truncated middle, and its first step must
+  // not be presented as the entry.
   if (!found) {
     return [{ file: importer }]
   }
@@ -553,7 +553,7 @@ function nativeGraphContext(native: NativeGraph | undefined, cwd: string | undef
 
   const errors = compilation.errors
   return {
-    // Match the eager path, which reports through the bundler rather than throwing.
+    // Report through the compilation's error channel.
     addError: errors && ((message: string) => { errors.push(new Error(message)) }),
     graph: {
       getModuleInfo(id) {
@@ -604,7 +604,8 @@ async function enrichAndReportLazy(
   if (code) {
     const loc = findImportLocation(lexImports(cache, violation.importer, code), violation.rawId, violation.id, violation.importer, cwd)
     if (loc) {
-      // No sourcemap: it is only reachable from inside a transform, which is what this skips.
+      // Sourcemaps are only reachable inside a transform, so positions refer to the code
+      // the bundler holds.
       snippet = { text: generateSnippet(code, loc.line, loc.column), line: loc.line, column: loc.column }
     }
   }
@@ -672,8 +673,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const plugins: UnpluginOptions[] = [{
     name: 'impound',
     enforce: 'pre' as const,
-    // Lazy reports from the main plugin so violations stay attributed to `impound`.
-    ...(traceMode === 'lazy' ? { buildEnd: reportHeldViolations } : {}),
+    // Reports any violation still held once the build's graph is complete.
+    ...(traceEnabled ? { buildEnd: reportHeldViolations } : {}),
     load: {
       filter: { id: PROXY_ID_RE },
       handler(id: string) {
@@ -701,7 +702,21 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       let resolvedId: string | undefined
       let relativeId: string | undefined
       let relativeImporter: string | undefined
-      let trackedForTrace = false
+
+      // The backwards walk crosses ancestors that no matcher includes, so every edge
+      // is recorded and not only those from included importers.
+      if (traceMode === 'eager') {
+        resolvedId = RELATIVE_IMPORT_RE.test(rawId)
+          ? join(importer.split('?')[0]!, '..', rawId)
+          : rawId
+        relativeId = isAbsolute(resolvedId) && cwd ? relative(cwd, resolvedId) : resolvedId
+        let importerResolved = resolvedImports.get(importer)
+        if (!importerResolved) {
+          importerResolved = new Map()
+          resolvedImports.set(importer, importerResolved)
+        }
+        importerResolved.set(rawId, relativeId)
+      }
 
       for (const matcher of matcherStates) {
         let included = matcher.filterCache.get(importer)
@@ -730,16 +745,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
             relativeImporter = isAbsolute(importer) && cwd ? relative(cwd, importer) : importer
             relativeImporterCache.set(importer, relativeImporter)
           }
-        }
-
-        if (traceMode === 'eager' && !trackedForTrace) {
-          trackedForTrace = true
-          let importerResolved = resolvedImports.get(importer)
-          if (!importerResolved) {
-            importerResolved = new Map()
-            resolvedImports.set(importer, importerResolved)
-          }
-          importerResolved.set(rawId, id)
         }
 
         const { options, warnedMessages } = matcher
@@ -777,8 +782,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
                 enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd, warnedMessages)
               }
               else {
-                // Lazy holds everything until the graph is complete; eager holds only until
-                // the importer is transformed.
+                // Held until the importer is transformed (eager) or the graph is
+                // complete (lazy).
                 hold(importer, violation)
               }
             }
@@ -834,13 +839,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
             }
           }
           catch {
-            // getCombinedSourcemap may throw — fall back to transformed code
+            // getCombinedSourcemap may throw; fall back to transformed code
           }
         }
       }
       catch {
         // A module that does not parse (a raw SFC, an asset) is still registered below,
-        // so resolveId can report against it immediately rather than deferring.
+        // so resolveId can report against it immediately.
         importMap = new Map()
       }
 
@@ -945,8 +950,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         await enrichAndReportLazy(graph, violation, maxTraceDepth, cwd, errorFn, cache)
       }
       else {
-        // No module graph to read (esbuild). Report the plain message rather than
-        // inventing a trace: a single-step trace adds no Trace block.
+        // esbuild exposes no module graph, so there is no chain or snippet to add.
         reportViolation(violation, [{ file: violation.relativeImporter }], undefined, cwd, errorFn, violation.warnedMessages)
       }
     }
