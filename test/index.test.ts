@@ -218,6 +218,7 @@ describe('trace mode', () => {
     expect(result.message).toContain('Trace:')
     expect(result.message).toContain('entry.js')
     expect(result.message).toContain('(entry)')
+    expect(result.message).toContain('Code:')
   })
 
   it('records relative import edges for the trace', async () => {
@@ -691,7 +692,7 @@ describe('trace mode (deferred violations)', () => {
     const context = { error: (msg: string) => errors.push(msg) }
 
     await (impoundPlugin as any).resolveId.call(context, 'middle.js', undefined, { isEntry: true })
-    await (tracePlugin as any).resolveId.call(context, 'middle.js', undefined, { isEntry: true })
+    await (impoundPlugin as any).resolveId.call(context, 'middle.js', undefined, { isEntry: true })
 
     // resolveId BEFORE transform; violation is deferred
     const result = await (impoundPlugin as any).resolveId.call(context, 'secret', 'middle.js')
@@ -871,7 +872,7 @@ describe('trace mode (deferred violations)', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    await (tracePlugin as any).resolveId('entry.js', undefined, { isEntry: true })
+    await (impoundPlugin as any).resolveId('entry.js', undefined, { isEntry: true })
 
     // Build the graph: entry.js -> middle.js -> secret
     await (tracePlugin as any).transform('import middle from "middle.js"\nconsole.log(middle)', 'entry.js')
@@ -918,7 +919,7 @@ describe('trace mode (deferred violations)', () => {
     const errors: string[] = []
     const context = { error: (msg: string) => errors.push(msg) }
 
-    await (tracePlugin as any).resolveId('entry.js', undefined, { isEntry: true })
+    await (impoundPlugin as any).resolveId('entry.js', undefined, { isEntry: true })
 
     // Transform entry with no imports; graphEntry exists but has empty import map
     await (tracePlugin as any).transform('console.log("no imports")', 'entry.js')
@@ -1741,6 +1742,19 @@ describe('hook filters', () => {
     const impoundPlugin = plugins.find(p => p.name === 'impound')!
 
     expect((impoundPlugin as any).resolveId.call({}, '\0impound:proxy', 'entry.js')).toBe('\0impound:proxy')
+  })
+
+  it('should only build a sourcemap for modules a matcher includes', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: true, include: [/src\//], patterns: [['bar']] }) as any[]
+    const tracePlugin = plugins.find(p => p.name === 'impound:trace')!
+
+    const getCombinedSourcemap = vi.fn(() => ({ mappings: '' }))
+
+    await tracePlugin.transform.call({ getCombinedSourcemap }, 'export default 1', '/app/node_modules/dep/index.js')
+    expect(getCombinedSourcemap).not.toHaveBeenCalled()
+
+    await tracePlugin.transform.call({ getCombinedSourcemap }, 'export default 1', '/app/src/entry.js')
+    expect(getCombinedSourcemap).toHaveBeenCalledTimes(1)
   })
 
   it('should not transform binary assets in trace mode', () => {

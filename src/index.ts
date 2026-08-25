@@ -138,11 +138,15 @@ interface ImportLocation {
   statementEnd: number
 }
 
-interface ModuleGraphEntry {
+interface ModuleSource {
   code: string
   originalCode?: string
   sourceMap?: unknown
-  imports: Map<string, ImportLocation>
+}
+
+function stripQuery(id: string): string {
+  const queryIndex = id.indexOf('?')
+  return queryIndex === -1 ? id : id.slice(0, queryIndex)
 }
 
 interface PendingViolation {
@@ -229,7 +233,7 @@ function findImportLocation(
   if (direct) {
     return direct
   }
-  const importerBase = importer.split('?')[0]!
+  const importerBase = stripQuery(importer)
   for (const [specifier, specLoc] of imports) {
     const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(importerBase, '..', specifier) : specifier
     let normalizedResolved = resolved
@@ -253,43 +257,50 @@ interface TraceGraph {
 
 /** Build an import trace from entry to the importer via BFS backwards through the graph. */
 function buildTrace(graph: TraceGraph, importer: string, maxDepth: number): ImpoundTraceStep[] {
-  const visited = new Set([importer])
-  const queue: [string, string[]][] = [[importer, [importer]]]
-  let found: string[] | undefined
+  // `cameFrom` maps each visited ancestor to the module that imports it, so the chain is
+  // rebuilt by walking forwards from whichever entry is reached.
+  const cameFrom = new Map<string, string | undefined>([[importer, undefined]])
+  const queue = [importer]
+  const depths = [1]
+  let found: string | undefined
 
-  while (queue.length > 0 && !found) {
-    const [current, path] = queue.shift()!
-    if (path.length > maxDepth) {
+  for (let cursor = 0; cursor < queue.length && found === undefined; cursor++) {
+    const current = queue[cursor]!
+    const depth = depths[cursor]!
+    if (depth > maxDepth) {
       continue
     }
     if (graph.isEntry(current)) {
-      found = path
+      found = current
       break
     }
     for (const parent of graph.parents(current)) {
-      if (visited.has(parent)) {
+      if (cameFrom.has(parent)) {
         continue
       }
-      visited.add(parent)
-      const next = [...path, parent]
+      cameFrom.set(parent, current)
       if (graph.isEntry(parent)) {
-        found = next
+        found = parent
         break
       }
-      queue.push([parent, next])
+      queue.push(parent)
+      depths.push(depth + 1)
     }
   }
 
   // A path that never reached an entry is a truncated middle, and its first step must
   // not be presented as the entry.
-  if (!found) {
+  if (found === undefined) {
     return [{ file: importer }]
   }
 
-  found.reverse()
+  const chain: string[] = []
+  for (let node: string | undefined = found; node !== undefined; node = cameFrom.get(node)) {
+    chain.push(node)
+  }
 
-  return found.map((file, i) => {
-    const next = found![i + 1]
+  return chain.map((file, i) => {
+    const next = chain[i + 1]
     const edge = next === undefined ? undefined : graph.importOf(file, next)
     if (!edge) {
       return { file }
@@ -305,7 +316,7 @@ function buildTrace(graph: TraceGraph, importer: string, maxDepth: number): Impo
 
 /** Read the graph collected during transform, for `trace: true`. */
 function eagerGraph(
-  moduleGraph: Map<string, ModuleGraphEntry>,
+  moduleImports: Map<string, Map<string, ImportLocation>>,
   resolvedImports: Map<string, Map<string, string>>,
   entries: Set<string>,
   cwd?: string,
@@ -314,7 +325,7 @@ function eagerGraph(
 
   const importersOf = new Map<string, string[]>()
   for (const [moduleId, imports] of resolvedImports) {
-    if (!moduleGraph.has(moduleId)) {
+    if (!moduleImports.has(moduleId)) {
       continue
     }
     for (const resolvedId of imports.values()) {
@@ -335,7 +346,7 @@ function eagerGraph(
       /* v8 ignore next -- the walk only reaches files that have resolved imports */
       for (const [specifier, resolvedId] of resolvedImports.get(file) || []) {
         if (resolvedId === next) {
-          const loc = moduleGraph.get(file)?.imports.get(specifier)
+          const loc = moduleImports.get(file)?.get(specifier)
           return { specifier, line: loc?.line, column: loc?.column }
         }
       }
@@ -355,32 +366,33 @@ function formatTrace(trace: ImpoundTraceStep[], cwd?: string): string {
 
 function enrichAndReport(
   violation: PendingViolation,
-  moduleGraph: Map<string, ModuleGraphEntry>,
-  resolvedImports: Map<string, Map<string, string>>,
-  entries: Set<string>,
+  moduleImports: Map<string, Map<string, ImportLocation>>,
+  moduleSources: Map<string, ModuleSource>,
+  graph: TraceGraph,
   maxTraceDepth: number,
   cwd: string | undefined,
   warnedMessages: Set<string> | undefined,
 ): void {
   const { id, rawId, importer, errorFn } = violation
 
-  const trace = buildTrace(eagerGraph(moduleGraph, resolvedImports, entries, cwd), importer, maxTraceDepth)
+  const trace = buildTrace(graph, importer, maxTraceDepth)
 
   let snippet: ImpoundSnippet | undefined
-  /* v8 ignore start -- always defined: enrichAndReport is only called when the importer is in the module graph */
-  const importerEntry = moduleGraph.get(importer)
-  if (importerEntry) {
+  const importerImports = moduleImports.get(importer)
+  const importerSource = moduleSources.get(importer)
+  /* v8 ignore start -- always defined: the importer was transformed and matched a matcher, so its source is retained */
+  if (importerImports && importerSource) {
   /* v8 ignore stop */
-    const loc = findImportLocation(importerEntry.imports, rawId, id, importer, cwd)
+    const loc = findImportLocation(importerImports, rawId, id, importer, cwd)
     if (loc) {
-      let snippetCode = importerEntry.code
+      let snippetCode = importerSource.code
       let snippetLine = loc.line
       let snippetColumn = loc.column
 
       // If a source map is available, reverse-map to original source positions
-      if (importerEntry.sourceMap) {
+      if (importerSource.sourceMap) {
         try {
-          const tracer = new TraceMap(importerEntry.sourceMap as ConstructorParameters<typeof TraceMap>[0])
+          const tracer = new TraceMap(importerSource.sourceMap as ConstructorParameters<typeof TraceMap>[0])
           const original = originalPositionFor(tracer, { line: loc.line, column: loc.column })
           if (original.line != null) {
             snippetLine = original.line
@@ -392,8 +404,8 @@ function enrichAndReport(
             if (originalSource != null) {
               snippetCode = originalSource
             }
-            else if (importerEntry.originalCode) {
-              snippetCode = importerEntry.originalCode
+            else if (importerSource.originalCode) {
+              snippetCode = importerSource.originalCode
             }
           }
         }
@@ -480,6 +492,18 @@ interface NativeLazyTarget {
   addError?: (message: string) => void
 }
 
+let lexerReady = false
+
+/** Resolve once, then stay synchronous: a per-module `await` costs a microtask each. */
+function whenLexerReady(): Promise<void> | undefined {
+  if (lexerReady) {
+    return
+  }
+  return init.then(() => {
+    lexerReady = true
+  })
+}
+
 /** Lex a module's imports once per reporting pass. Only modules on a violation's chain are read. */
 function lexImports(cache: Map<string, Map<string, ImportLocation>>, id: string, code: string): Map<string, ImportLocation> {
   const cached = cache.get(id)
@@ -517,7 +541,7 @@ function lazyGraph(
       }
       const nextRelative = isAbsolute(next) && cwd ? relative(cwd, next) : next
       for (const [specifier, loc] of lexImports(cache, file, code)) {
-        const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(file.split('?')[0]!, '..', specifier) : specifier
+        const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(stripQuery(file), '..', specifier) : specifier
         // The suffix match needs a path boundary, or `./data.js` matches `a.js`.
         if (resolved === next || resolved === nextRelative || specifier === nextRelative || specifier.endsWith(`/${nextRelative}`)) {
           return { specifier, line: loc.line, column: loc.column }
@@ -557,7 +581,7 @@ function nativeGraphContext(native: NativeGraph | undefined, cwd: string | undef
     addError: errors && ((message: string) => { errors.push(new Error(message)) }),
     graph: {
       getModuleInfo(id) {
-        const module = byId.get(id) || byId.get(id.split('?')[0]!)
+        const module = byId.get(id) || byId.get(stripQuery(id))
         if (!module) {
           return null
         }
@@ -595,7 +619,7 @@ async function enrichAndReportLazy(
   errorFn: (msg: string) => void,
   cache: Map<string, Map<string, ImportLocation>>,
 ): Promise<void> {
-  await init
+  await whenLexerReady()
 
   const trace = buildTrace(lazyGraph(ctx, cwd, cache), violation.importer, maxTraceDepth)
 
@@ -622,7 +646,10 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const traceEnabled = traceMode !== 'off'
   const maxTraceDepth = globalOptions.maxTraceDepth ?? 20
 
-  const moduleGraph = new Map<string, ModuleGraphEntry>()
+  const moduleImports = new Map<string, Map<string, ImportLocation>>()
+  // Only modules a matcher includes can be the importer in a violation, so only those
+  // need their code and sourcemap kept alive for a snippet.
+  const moduleSources = new Map<string, ModuleSource>()
   // Maps moduleId -> Map<rawSpecifier, resolvedAbsoluteId>
   const resolvedImports = new Map<string, Map<string, string>>()
   const entries = new Set<string>()
@@ -668,7 +695,32 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     warnedMessages: options.warn !== 'always' ? new Set<string>() : undefined,
   }))
 
+  function includes(matcher: MatcherState, id: string): boolean {
+    let included = matcher.filterCache.get(id)
+    if (included === undefined) {
+      included = matcher.filter(id)
+      matcher.filterCache.set(id, included)
+    }
+    return included
+  }
+
+  function includedByAny(id: string): boolean {
+    for (const matcher of matcherStates) {
+      if (includes(matcher, id)) {
+        return true
+      }
+    }
+    return false
+  }
+
   const relativeImporterCache = new Map<string, string>()
+
+  // Inverting `resolvedImports` is proportional to the whole graph, so it is done once
+  // and reused until the graph changes.
+  let cachedEagerGraph: TraceGraph | undefined
+  function getEagerGraph(): TraceGraph {
+    return (cachedEagerGraph ??= eagerGraph(moduleImports, resolvedImports, entries, cwd))
+  }
 
   const plugins: UnpluginOptions[] = [{
     name: 'impound',
@@ -693,6 +745,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       if (!importer) {
         if (traceMode === 'eager' && resolveOptions?.isEntry) {
           entries.add(id)
+          cachedEagerGraph = undefined
         }
         return
       }
@@ -707,7 +760,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       // is recorded and not only those from included importers.
       if (traceMode === 'eager') {
         resolvedId = RELATIVE_IMPORT_RE.test(rawId)
-          ? join(importer.split('?')[0]!, '..', rawId)
+          ? join(stripQuery(importer), '..', rawId)
           : rawId
         relativeId = isAbsolute(resolvedId) && cwd ? relative(cwd, resolvedId) : resolvedId
         let importerResolved = resolvedImports.get(importer)
@@ -715,21 +768,19 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
           importerResolved = new Map()
           resolvedImports.set(importer, importerResolved)
         }
-        importerResolved.set(rawId, relativeId)
+        if (importerResolved.get(rawId) !== relativeId) {
+          importerResolved.set(rawId, relativeId)
+          cachedEagerGraph = undefined
+        }
       }
 
       for (const matcher of matcherStates) {
-        let included = matcher.filterCache.get(importer)
-        if (included === undefined) {
-          included = matcher.filter(importer)
-          matcher.filterCache.set(importer, included)
-        }
-        if (!included) {
+        if (!includes(matcher, importer)) {
           continue
         }
 
         resolvedId ??= RELATIVE_IMPORT_RE.test(rawId)
-          ? join(importer.split('?')[0]!, '..', rawId)
+          ? join(stripQuery(importer), '..', rawId)
           : rawId
 
         if (matcher.excludeFilter?.(resolvedId)) {
@@ -759,7 +810,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
               : pattern(id, relativeImporter)
 
           if (usesImport) {
-            formattedImporter ??= relativeImporter.split('?')[0]!
+            formattedImporter ??= stripQuery(relativeImporter)
             const baseMessage = `${typeof usesImport === 'string' ? usesImport : (warning || 'Invalid import')} [importing \`${id}\` from \`${formattedImporter}\`]`
 
             if (traceEnabled) {
@@ -778,8 +829,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
                 warnedMessages,
               }
 
-              if (traceMode === 'eager' && moduleGraph.has(importer)) {
-                enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd, warnedMessages)
+              if (traceMode === 'eager' && moduleImports.has(importer)) {
+                enrichAndReport(violation, moduleImports, moduleSources, getEagerGraph(), maxTraceDepth, cwd, warnedMessages)
               }
               else {
                 // Held until the importer is transformed (eager) or the graph is
@@ -813,11 +864,10 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   }]
 
   if (traceMode === 'eager') {
-    async function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> {
-      if (BINARY_ASSET_RE.test(id))
-        return
-
-      await init
+    function registerModule(code: string, id: string, getCombinedSourcemap?: () => unknown): void {
+      // Snippets are only ever rendered for a violation's importer, which by definition
+      // passed a matcher's filter, so nothing else needs its code or sourcemap retained.
+      const tracked = includedByAny(id)
       let importMap = new Map<string, ImportLocation>()
       let originalCode: string | undefined
       let sourceMap: unknown
@@ -827,7 +877,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         importMap = getImportLocations(code, imports)
 
         // The combined source map is what lets snippets point at original source.
-        if (getCombinedSourcemap) {
+        if (tracked && getCombinedSourcemap) {
           try {
             const map = getCombinedSourcemap() as { mappings?: string, sourcesContent?: (string | null)[] } | undefined
             if (map?.mappings) {
@@ -849,35 +899,58 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         importMap = new Map()
       }
 
-      const graphEntry: ModuleGraphEntry = { code, originalCode, sourceMap, imports: importMap }
-      moduleGraph.set(id, graphEntry)
+      const source: ModuleSource | undefined = tracked ? { code, originalCode, sourceMap } : undefined
+      const register = (key: string) => {
+        moduleImports.set(key, importMap)
+        if (source) {
+          moduleSources.set(key, source)
+        }
+      }
+
+      register(id)
       // resolveId and transform can see the same module under different id forms.
       /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
-      const bareId = id.split('?')[0]!
+      const bareId = stripQuery(id)
       if (bareId !== id)
-        moduleGraph.set(bareId, graphEntry)
-      if (isAbsolute(id) && globalOptions.cwd) {
-        const relId = relative(globalOptions.cwd, id)
-        moduleGraph.set(relId, graphEntry)
-        const relBareId = relId.split('?')[0]!
+        register(bareId)
+      if (isAbsolute(id) && cwd) {
+        const relId = relative(cwd, id)
+        register(relId)
+        const relBareId = stripQuery(relId)
         if (relBareId !== relId)
-          moduleGraph.set(relBareId, graphEntry)
+          register(relBareId)
       }
       /* v8 ignore stop */
+      cachedEagerGraph = undefined
+
+      if (pendingViolations.size === 0) {
+        return
+      }
 
       // Flush violations that were waiting for this module's transform, under every id
       // form resolveId may have keyed them by.
-      const relativeId = isAbsolute(id) && globalOptions.cwd ? relative(globalOptions.cwd, id) : id
-      const candidateKeys = new Set([id, relativeId, id.split('?')[0]!, relativeId.split('?')[0]!])
+      const relativeId = isAbsolute(id) && cwd ? relative(cwd, id) : id
+      const candidateKeys = new Set([id, relativeId, bareId, stripQuery(relativeId)])
       for (const key of candidateKeys) {
         const pending = pendingViolations.get(key)
         if (pending) {
           pendingViolations.delete(key)
           for (const violation of pending) {
-            enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, globalOptions.cwd, violation.warnedMessages)
+            enrichAndReport(violation, moduleImports, moduleSources, getEagerGraph(), maxTraceDepth, cwd, violation.warnedMessages)
           }
         }
       }
+    }
+
+    function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> | undefined {
+      if (BINARY_ASSET_RE.test(id))
+        return
+
+      const pending = whenLexerReady()
+      if (pending) {
+        return pending.then(() => registerModule(code, id, getCombinedSourcemap))
+      }
+      registerModule(code, id, getCombinedSourcemap)
     }
 
     const transformWithSourceMap = {
@@ -895,12 +968,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
     const tracePlugin: UnpluginOptions = {
       name: 'impound:trace',
-      resolveId(_id, importer, resolveOptions) {
-        if (!importer && resolveOptions?.isEntry) {
-          entries.add(_id)
-        }
-        return null
-      },
       transform: {
         filter: { id: { exclude: BINARY_ASSET_RE } },
         handler: traceTransform,
@@ -922,7 +989,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
     const held: PendingViolation[] = []
     for (const violations of pendingViolations.values()) {
-      held.push(...violations)
+      for (const violation of violations) {
+        held.push(violation)
+      }
     }
     pendingViolations.clear()
 

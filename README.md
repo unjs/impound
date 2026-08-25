@@ -78,8 +78,11 @@ Suggestions:
 #### Choosing a trace mode
 
 `trace: true` records the import graph as modules are transformed. Every module gets
-parsed and its sourcemap built, so snippets can point at original source. A build with
-no violations pays for all of that and reads none of it.
+parsed, and modules an `include` pattern covers also get their sourcemap built and their
+source retained, so snippets can point at original source.
+
+A narrow `include` therefore keeps eager tracing cheap: only modules that could be the
+importer in a violation are retained.
 
 `trace: 'lazy'` records nothing, and reads the bundler's own module graph when a
 violation actually happens.
@@ -89,7 +92,7 @@ violation actually happens.
 | Import chain | yes | yes, including dynamic imports |
 | Code snippet | yes | yes |
 | Snippet shows | original source | original source on webpack and rspack, otherwise the code the bundler holds |
-| Per-module cost | parse + sourcemap + retain | none |
+| Per-module cost | parse, plus sourcemap + retain within `include` | none |
 | Bundlers | all | all except esbuild |
 
 Lazy reports from `buildEnd`, and a dev server only calls that when it shuts down, so
