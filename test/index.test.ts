@@ -243,15 +243,67 @@ describe('trace mode', () => {
     expect(violations[0]!.snippet!.line).toBeGreaterThan(0)
   })
 
-  it('allows suppressing violations via onViolation returning false', async () => {
+  it('suppresses the report but still proxies the import when onViolation returns false', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    await processTrace({
+    const result = await processTrace({
       trace: true,
       patterns: [['secret']],
       error: false,
       onViolation: () => false,
     })
     expect(errorSpy).not.toHaveBeenCalled()
+    expect(result).toContain('createMock')
+    errorSpy.mockRestore()
+  })
+
+  it('tracks entries resolved before the trace plugin sees them', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']], error: false, onViolation: info => void violations.push(info) })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = pluginArray.find(plugin => plugin.name === 'impound:trace')!
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'entry.js', undefined, { isEntry: true })
+    await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'middle.js', 'entry.js')
+    await (tracePlugin as any).transform.call({}, 'import middle from "middle.js"', 'entry.js')
+    await (tracePlugin as any).transform.call({}, 'import secret from "secret"', 'middle.js')
+    await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'secret', 'middle.js')
+
+    expect(violations[0]!.trace).toMatchObject([{ file: 'entry.js', import: 'middle.js' }, { file: 'middle.js' }])
+    errorSpy.mockRestore()
+  })
+
+  it('ignores importers that have not been transformed when walking the chain', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']], error: false, onViolation: info => void violations.push(info) })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = pluginArray.find(plugin => plugin.name === 'impound:trace')!
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'middle.js', 'entry.js')
+    await (tracePlugin as any).transform.call({}, 'import secret from "secret"', 'middle.js')
+    await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'secret', 'middle.js')
+
+    expect(violations[0]!.trace).toBeUndefined()
+    errorSpy.mockRestore()
+  })
+
+  it('holds a repeated violation once, so a dev server does not accumulate it', async () => {
+    const onViolation = vi.fn()
+    const plugins = ImpoundPlugin.rollup({ trace: true, patterns: [['secret', 'Not allowed']], error: false, onViolation })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = pluginArray.find(plugin => plugin.name === 'impound:trace')!
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    for (let i = 0; i < 3; i++) {
+      await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'secret', 'middle.js')
+    }
+    await (tracePlugin as any).transform.call({}, 'import secret from "secret"', 'middle.js')
+
+    expect(onViolation).toHaveBeenCalledTimes(1)
     errorSpy.mockRestore()
   })
 
@@ -1166,6 +1218,31 @@ describe('trace mode (lazy) on webpack and rspack', () => {
     await (plugin as any).buildEnd.call(ctx)
     expect(errors.map(e => e.message).join('')).toContain('Server-only')
   })
+
+  it('reports without a chain when no cwd is set and the importer has no known origin', async () => {
+    const plugins = ImpoundPlugin.raw({ trace: 'lazy', patterns: [['queries.server', 'Server-only']] }, { framework: 'webpack', versions: {}, webpack: { compiler: {} } } as any)
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    const plugin = array.find(p => p.name === 'impound')!
+    const errors: Error[] = []
+    const session = { resource: 'session.js', originalSource: () => ({ source: () => 'import { getUsers } from "./queries.server"' }) }
+    const ctx = {
+      getNativeBuildContext: () => ({
+        framework: 'webpack',
+        compilation: {
+          errors,
+          modules: [session],
+          // A concatenated origin module has no `resource`, so it cannot be a chain step.
+          moduleGraph: { getIncomingConnections: () => [{ originModule: {} }] },
+        },
+      }),
+    }
+    await (plugin as any).resolveId.call({ ...ctx, error: () => {} }, './queries.server', 'session.js')
+    await (plugin as any).buildEnd.call(ctx)
+
+    const message = errors.map(e => e.message).join('')
+    expect(message).toContain('Server-only')
+    expect(message).not.toContain('Trace:')
+  })
 })
 
 describe('reporting when the build is already failing', () => {
@@ -1492,6 +1569,50 @@ describe('trace mode (lazy)', () => {
     await expect((impoundPlugin as any).buildEnd.call({})).rejects.toThrow('Not allowed')
   })
 
+  it('holds a repeated violation once, so a dev server does not accumulate it', async () => {
+    const onViolation = vi.fn()
+    const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Not allowed']], error: false, onViolation })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    for (let i = 0; i < 3; i++) {
+      await (impoundPlugin as any).resolveId.call({ error: () => {} }, 'secret', 'middle.js')
+    }
+    await (impoundPlugin as any).buildEnd.call({ getModuleInfo: () => null })
+
+    expect(onViolation).toHaveBeenCalledTimes(1)
+    errorSpy.mockRestore()
+  })
+
+  it('suppresses the report but still proxies the import when onViolation returns false', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await processTrace({
+      trace: 'lazy',
+      patterns: [['secret']],
+      error: false,
+      onViolation: () => false,
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(result).toContain('createMock')
+    errorSpy.mockRestore()
+  })
+
+  it('reports without a snippet when the importer has no matching import', async () => {
+    const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Not allowed']] })
+    const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
+    const impoundPlugin = pluginArray.find(plugin => plugin.name === 'impound')!
+    const error = vi.fn()
+    // A bundler-generated importer: it holds the resolved import, but no source for it.
+    const ctx = { error, getModuleInfo: () => ({ code: 'export default 1', isEntry: true }) }
+
+    await (impoundPlugin as any).resolveId.call(ctx, 'secret', 'middle.js')
+    await (impoundPlugin as any).buildEnd.call(ctx)
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error.mock.calls[0]![0]).not.toContain('Code:')
+  })
+
   it('holds violations until the graph is complete rather than reporting on resolve', async () => {
     const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Not allowed']] })
     const pluginArray = Array.isArray(plugins) ? plugins : [plugins]
@@ -1601,6 +1722,22 @@ describe('hook filters', () => {
     expect(loadFilter.test('\0impound:proxy')).toBe(true)
     expect(loadFilter.test('/app/assets/font.woff2')).toBe(false)
     expect(loadFilter.test('/app/entry.js')).toBe(false)
+  })
+
+  it('should leave other modules alone in load', () => {
+    const rawPlugins = ImpoundPlugin.raw({ patterns: [['bar']] }, { framework: 'rollup', versions: {} })
+    const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
+    const impoundPlugin = plugins.find(p => p.name === 'impound')!
+
+    expect((impoundPlugin.load as ObjectHook<any, 'id'>).handler.call({}, 'entry.js')).toBeUndefined()
+  })
+
+  it('should resolve the proxy module to itself', () => {
+    const rawPlugins = ImpoundPlugin.raw({ patterns: [['bar']] }, { framework: 'rollup', versions: {} })
+    const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
+    const impoundPlugin = plugins.find(p => p.name === 'impound')!
+
+    expect((impoundPlugin as any).resolveId.call({}, '\0impound:proxy', 'entry.js')).toBe('\0impound:proxy')
   })
 
   it('should not transform binary assets in trace mode', () => {

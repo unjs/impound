@@ -102,18 +102,25 @@ ImpoundPlugin.vite({
 })
 ```
 
-A denied import is replaced by a proxy module. That proxy has only a default export,
-and `syntheticNamedExports` papers over it on Rollup alone: rolldown, webpack, rspack and
-esbuild ignore it. So on those, a named import from a denied module can still fail with
-an error naming `impound:proxy` before impound reports the real violation. It shows up
-when a build is allowed to continue past a violation, which means `error: false`, or
-lazy tracing, which reports at `buildEnd`.
-
 Lazy reads the graph through `getModuleInfo` on rollup, vite and rolldown, and through
-`compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from `originalSource()`,
-so it shows original rather than transformed code. esbuild exposes no
-module graph to a plugin, so there lazy reports the plain message with no chain or
+`compilation.moduleGraph` on webpack and rspack, where the snippet comes from
+`originalSource()` and so shows original rather than transformed code. esbuild exposes
+no module graph to a plugin, so there lazy reports the plain message with no chain or
 snippet.
+
+With `error: true`, lazy reports the first violation and fails the build there, so later
+ones stay unreported until it is fixed. With either mode, `onViolation` returning `false`
+suppresses the report but no longer allows the import: by the time the hook runs, the
+import has already been replaced by the proxy.
+
+### Named imports from a denied module
+
+A denied import is replaced by a proxy module that has only a default export.
+`syntheticNamedExports` papers over that on Rollup alone: rolldown, webpack, rspack and
+esbuild ignore it. So on those, a named import from a denied module can fail with an
+error naming `impound:proxy` before impound reports the real violation. It shows up only
+when the build is allowed to continue past a violation, which means `error: false` or
+lazy tracing.
 
 ## 💻 Development
 

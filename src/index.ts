@@ -84,7 +84,10 @@ export interface ImpoundMatcherOptions {
   warn?: 'once' | 'always'
   /**
    * Callback invoked on every violation. Receives the violation details.
-   * Return `false` to allow the import and suppress the default error/warning.
+   *
+   * Return `false` to allow the import and suppress the default error/warning. When
+   * `trace` is enabled the hook runs after the import has already been replaced by the
+   * proxy, so `false` only suppresses the report.
    */
   onViolation?: (info: ImpoundViolationInfo) => boolean | void
   /**
@@ -107,6 +110,9 @@ export interface ImpoundSharedOptions {
    *
    * Use `'lazy'` for builds and keep `true` for a dev server: a dev server calls
    * `buildEnd` when it shuts down, so violations would go unreported for the session.
+   *
+   * With `error: true`, lazy reports the first violation and fails the build there, so
+   * later ones stay unreported until it is fixed.
    *
    * Lazy needs a module graph, which every bundler but esbuild exposes; there it
    * reports the plain message.
@@ -164,12 +170,13 @@ function getImportLocations(code: string, imports: readonly { n: string | undefi
     if (!imp.n)
       continue
 
-    // es-module-lexer emits source-ordered imports. Reset defensively if that ever changes.
+    /* v8 ignore start -- es-module-lexer emits source-ordered imports; a reset only if that changes */
     if (imp.s < offset) {
       line = 1
       lastNewline = -1
       offset = 0
     }
+    /* v8 ignore stop */
 
     while (offset < imp.s && offset < code.length) {
       if (code[offset] === '\n') {
@@ -236,101 +243,104 @@ function findImportLocation(
   }
 }
 
+/** The graph accessors a backwards walk needs, whoever is supplying the graph. */
+interface TraceGraph {
+  parents: (id: string) => Iterable<string>
+  isEntry: (id: string) => boolean
+  /** The specifier `file` uses to import `next`, and where it appears. */
+  importOf: (file: string, next: string) => { specifier: string, line?: number, column?: number } | undefined
+}
+
 /** Build an import trace from entry to the importer via BFS backwards through the graph. */
-function buildTrace(
-  importer: string,
+function buildTrace(graph: TraceGraph, importer: string, maxDepth: number): ImpoundTraceStep[] {
+  const visited = new Set([importer])
+  const queue: [string, string[]][] = [[importer, [importer]]]
+  let found: string[] | undefined
+
+  while (queue.length > 0 && !found) {
+    const [current, path] = queue.shift()!
+    if (path.length > maxDepth) {
+      continue
+    }
+    if (graph.isEntry(current)) {
+      found = path
+      break
+    }
+    for (const parent of graph.parents(current)) {
+      if (visited.has(parent)) {
+        continue
+      }
+      visited.add(parent)
+      const next = [...path, parent]
+      if (graph.isEntry(parent)) {
+        found = next
+        break
+      }
+      queue.push([parent, next])
+    }
+  }
+
+  // A path that never reached an entry is a truncated middle, and `formatTrace` would
+  // label its first step `(entry)`. Report no chain instead.
+  if (!found) {
+    return [{ file: importer }]
+  }
+
+  found.reverse()
+
+  return found.map((file, i) => {
+    const next = found![i + 1]
+    const edge = next === undefined ? undefined : graph.importOf(file, next)
+    if (!edge) {
+      return { file }
+    }
+    const step: ImpoundTraceStep = { file, import: edge.specifier }
+    if (edge.line != null) {
+      step.line = edge.line
+      step.column = edge.column
+    }
+    return step
+  })
+}
+
+/** Read the graph collected during transform, for `trace: true`. */
+function eagerGraph(
   moduleGraph: Map<string, ModuleGraphEntry>,
   resolvedImports: Map<string, Map<string, string>>,
   entries: Set<string>,
-  maxDepth: number,
   cwd?: string,
-): ImpoundTraceStep[] {
-  // Helper to normalize a path to its cwd-relative form for comparisons
+): TraceGraph {
   const normalize = (p: string) => isAbsolute(p) && cwd ? relative(cwd, p) : p
 
-  // BFS backwards from importer to find an entry point
-  const visited = new Set<string>()
-  // Each item in the queue: [currentModule, pathSoFar]
-  const queue: [string, string[]][] = [[importer, [importer]]]
-  visited.add(importer)
-
-  const isEntry = (id: string) => entries.has(id) || entries.has(normalize(id))
-
-  let bestPath: string[] = [importer]
-
-  while (queue.length > 0) {
-    const [current, path] = queue.shift()!
-    if (path.length > maxDepth)
+  const importersOf = new Map<string, string[]>()
+  for (const [moduleId, imports] of resolvedImports) {
+    if (!moduleGraph.has(moduleId)) {
       continue
-
-    if (isEntry(current)) {
-      bestPath = path
-      break
     }
-
-    // Find importers of `current`
-    const normalizedCurrent = normalize(current)
-    for (const [moduleId] of moduleGraph) {
-      if (visited.has(moduleId))
-        continue
-      // Check if moduleId imports `current` (by resolved id)
-      const resolvedForModule = resolvedImports.get(moduleId)
-      if (resolvedForModule) {
-        for (const [, resolvedId] of resolvedForModule) {
-          if (resolvedId === current || resolvedId === normalizedCurrent) {
-            visited.add(moduleId)
-            const newPath = [...path, moduleId]
-            if (isEntry(moduleId)) {
-              bestPath = newPath
-              queue.length = 0 // break outer loop
-              break
-            }
-            queue.push([moduleId, newPath])
-            break
-          }
-        }
+    for (const resolvedId of imports.values()) {
+      const existing = importersOf.get(resolvedId)
+      if (existing) {
+        existing.push(moduleId)
+      }
+      else {
+        importersOf.set(resolvedId, [moduleId])
       }
     }
   }
 
-  // Reverse so it goes entry -> ... -> importer
-  bestPath.reverse()
-
-  // Build trace steps with import location info
-  const trace: ImpoundTraceStep[] = []
-  for (let i = 0; i < bestPath.length; i++) {
-    const file = bestPath[i]!
-    const step: ImpoundTraceStep = { file }
-
-    if (i === 0 && entries.has(file)) {
-      // Mark entry
-    }
-
-    if (i < bestPath.length - 1) {
-      // Find what specifier this file uses to import the next file
-      const nextFile = bestPath[i + 1]!
-      /* v8 ignore start -- BFS only builds paths through nodes with resolvedImports, so this is always defined */
-      const resolvedForFile = resolvedImports.get(file)
-      if (!resolvedForFile)
-        continue
-      /* v8 ignore stop */
-      for (const [specifier, resolvedId] of resolvedForFile) {
-        if (resolvedId === nextFile) {
-          step.import = specifier
+  return {
+    parents: id => importersOf.get(id) || importersOf.get(normalize(id)) || [],
+    isEntry: id => entries.has(id) || entries.has(normalize(id)),
+    importOf(file, next) {
+      /* v8 ignore next -- the walk only reaches files that have resolved imports */
+      for (const [specifier, resolvedId] of resolvedImports.get(file) || []) {
+        if (resolvedId === next) {
           const loc = moduleGraph.get(file)?.imports.get(specifier)
-          if (loc) {
-            step.line = loc.line
-            step.column = loc.column
-          }
-          break
+          return { specifier, line: loc?.line, column: loc?.column }
         }
       }
-    }
-
-    trace.push(step)
+    },
   }
-
-  return trace
 }
 
 function formatTrace(trace: ImpoundTraceStep[], cwd?: string): string {
@@ -354,10 +364,8 @@ function enrichAndReport(
 ): void {
   const { id, rawId, importer, errorFn } = violation
 
-  // Build trace
-  const trace = buildTrace(importer, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd)
+  const trace = buildTrace(eagerGraph(moduleGraph, resolvedImports, entries, cwd), importer, maxTraceDepth)
 
-  // Build snippet from the module graph (entries are stored under normalized key forms in transform)
   let snippet: ImpoundSnippet | undefined
   /* v8 ignore start -- always defined: enrichAndReport is only called when the importer is in the module graph */
   const importerEntry = moduleGraph.get(importer)
@@ -398,7 +406,7 @@ function enrichAndReport(
     }
   }
 
-  // The eager path always binds errorFn at resolveId; only the lazy path leaves it unset.
+  // Only the lazy path leaves errorFn unset, and it does not call this.
   reportViolation(violation, trace, snippet, cwd, errorFn!, warnedMessages)
 }
 
@@ -490,81 +498,33 @@ function lexImports(cache: Map<string, Map<string, ImportLocation>>, id: string,
   return locations
 }
 
-/** Build an import trace by walking `importers` backwards, rather than a graph of our own. */
-function buildLazyTrace(
+/** Read the bundler's own graph, for `trace: 'lazy'`. Only modules on a chain are lexed. */
+function lazyGraph(
   ctx: LazyGraphContext,
-  importer: string,
-  maxDepth: number,
   cwd: string | undefined,
   cache: Map<string, Map<string, ImportLocation>>,
-): ImpoundTraceStep[] {
-  const visited = new Set<string>([importer])
-  const queue: [string, string[]][] = [[importer, [importer]]]
-  let bestPath: string[] = [importer]
-  let found = false
-
-  while (queue.length > 0 && !found) {
-    const [current, path] = queue.shift()!
-    if (path.length > maxDepth) {
-      continue
-    }
-    const info = ctx.getModuleInfo(current)
-    if (info?.isEntry) {
-      bestPath = path
-      found = true
-      break
-    }
-    for (const parent of [...info?.importers || [], ...info?.dynamicImporters || []]) {
-      if (visited.has(parent)) {
-        continue
-      }
-      visited.add(parent)
-      const next = [...path, parent]
-      if (ctx.getModuleInfo(parent)?.isEntry) {
-        bestPath = next
-        found = true
-        break
-      }
-      queue.push([parent, next])
-    }
-  }
-
-  // A path that never reached an entry is a truncated middle, and `formatTrace` would
-  // label its first step `(entry)`. Report no chain instead, as the eager path does.
-  if (!found) {
-    return [{ file: importer }]
-  }
-
-  // Reverse so it reads entry -> ... -> importer
-  bestPath.reverse()
-
-  const trace: ImpoundTraceStep[] = []
-  for (let i = 0; i < bestPath.length; i++) {
-    const file = bestPath[i]!
-    const step: ImpoundTraceStep = { file }
-
-    if (i < bestPath.length - 1) {
-      const nextFile = bestPath[i + 1]!
+): TraceGraph {
+  return {
+    parents(id) {
+      const info = ctx.getModuleInfo(id)
+      return [...info?.importers || [], ...info?.dynamicImporters || []]
+    },
+    isEntry: id => ctx.getModuleInfo(id)?.isEntry === true,
+    importOf(file, next) {
       const code = ctx.getModuleInfo(file)?.code
-      if (code) {
-        const nextRelative = isAbsolute(nextFile) && cwd ? relative(cwd, nextFile) : nextFile
-        for (const [specifier, loc] of lexImports(cache, file, code)) {
-          const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(file.split('?')[0]!, '..', specifier) : specifier
-          // The suffix match needs a path boundary, or `./data.js` matches `a.js`.
-          if (resolved === nextFile || resolved === nextRelative || specifier === nextRelative || specifier.endsWith(`/${nextRelative}`)) {
-            step.import = specifier
-            step.line = loc.line
-            step.column = loc.column
-            break
-          }
+      if (!code) {
+        return
+      }
+      const nextRelative = isAbsolute(next) && cwd ? relative(cwd, next) : next
+      for (const [specifier, loc] of lexImports(cache, file, code)) {
+        const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(file.split('?')[0]!, '..', specifier) : specifier
+        // The suffix match needs a path boundary, or `./data.js` matches `a.js`.
+        if (resolved === next || resolved === nextRelative || specifier === nextRelative || specifier.endsWith(`/${nextRelative}`)) {
+          return { specifier, line: loc.line, column: loc.column }
         }
       }
-    }
-
-    trace.push(step)
+    },
   }
-
-  return trace
 }
 
 /**
@@ -637,7 +597,7 @@ async function enrichAndReportLazy(
 ): Promise<void> {
   await init
 
-  const trace = buildLazyTrace(ctx, violation.importer, maxTraceDepth, cwd, cache)
+  const trace = buildTrace(lazyGraph(ctx, cwd, cache), violation.importer, maxTraceDepth)
 
   let snippet: ImpoundSnippet | undefined
   const code = ctx.getModuleInfo(violation.importer)?.code
@@ -661,15 +621,33 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const traceEnabled = traceMode !== 'off'
   const maxTraceDepth = globalOptions.maxTraceDepth ?? 20
 
-  // Shared state for trace mode
   const moduleGraph = new Map<string, ModuleGraphEntry>()
   // Maps moduleId -> Map<rawSpecifier, resolvedAbsoluteId>
   const resolvedImports = new Map<string, Map<string, string>>()
   const entries = new Set<string>()
-  // Violations waiting for the importer's transform to complete
+  // Violations waiting for the importer's transform (eager) or for the graph (lazy)
   const pendingViolations = new Map<string, PendingViolation[]>()
+  // Keys already held, so a dev server resolving the same import on every reload does not
+  // accumulate violations that would all collapse to one message at report time.
+  const heldMessages = new Set<string>()
 
   const cwd = globalOptions.cwd
+
+  function hold(importer: string, violation: PendingViolation): void {
+    if (violation.warnedMessages) {
+      const key = `${importer}\0${violation.message}`
+      if (heldMessages.has(key)) {
+        return
+      }
+      heldMessages.add(key)
+    }
+    let pending = pendingViolations.get(importer)
+    if (!pending) {
+      pending = []
+      pendingViolations.set(importer, pending)
+    }
+    pending.push(violation)
+  }
 
   interface MatcherState {
     options: ImpoundMatcherOptions
@@ -694,6 +672,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const plugins: UnpluginOptions[] = [{
     name: 'impound',
     enforce: 'pre' as const,
+    // Lazy reports from the main plugin so violations stay attributed to `impound`.
+    ...(traceMode === 'lazy' ? { buildEnd: reportHeldViolations } : {}),
     load: {
       filter: { id: PROXY_ID_RE },
       handler(id: string) {
@@ -710,7 +690,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         return id
       }
       if (!importer) {
-        // This is an entry point resolution
         if (traceMode === 'eager' && resolveOptions?.isEntry) {
           entries.add(id)
         }
@@ -738,7 +717,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
           ? join(importer.split('?')[0]!, '..', rawId)
           : rawId
 
-        // Skip resolved targets matching excludeFiles
         if (matcher.excludeFilter?.(resolvedId)) {
           continue
         }
@@ -754,7 +732,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
           }
         }
 
-        // Track resolved imports for trace mode
         if (traceMode === 'eager' && !trackedForTrace) {
           trackedForTrace = true
           let importerResolved = resolvedImports.get(importer)
@@ -796,27 +773,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
                 warnedMessages,
               }
 
-              if (traceMode === 'lazy') {
-                // Hold every violation. Nothing can enrich it until the graph is complete.
-                let pending = pendingViolations.get(importer)
-                if (!pending) {
-                  pending = []
-                  pendingViolations.set(importer, pending)
-                }
-                pending.push(violation)
-              }
-              else if (moduleGraph.has(importer)) {
-                // Importer already transformed — enrich and report immediately
+              if (traceMode === 'eager' && moduleGraph.has(importer)) {
                 enrichAndReport(violation, moduleGraph, resolvedImports, entries, maxTraceDepth, cwd, warnedMessages)
               }
               else {
-                // Importer not yet transformed (dev mode) — defer until after transform
-                let pending = pendingViolations.get(importer)
-                if (!pending) {
-                  pending = []
-                  pendingViolations.set(importer, pending)
-                }
-                pending.push(violation)
+                // Lazy holds everything until the graph is complete; eager holds only until
+                // the importer is transformed.
+                hold(importer, violation)
               }
             }
             else {
@@ -845,7 +808,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   }]
 
   if (traceMode === 'eager') {
-    // shared transform logic for module graph building and flushing pending violations.
     async function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> {
       if (BINARY_ASSET_RE.test(id))
         return
@@ -859,7 +821,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         const [imports] = parse(code, id)
         importMap = getImportLocations(code, imports)
 
-        // extract the combined source map for original-source snippets.
+        // The combined source map is what lets snippets point at original source.
         if (getCombinedSourcemap) {
           try {
             const map = getCombinedSourcemap() as { mappings?: string, sourcesContent?: (string | null)[] } | undefined
@@ -877,16 +839,14 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         }
       }
       catch {
-        // If parsing fails (e.g. non-JS asset like a raw Vue SFC), use empty imports.
-        // We still register the module in the graph so that resolveId can find
-        // the importer and report violations immediately instead of deferring them.
+        // A module that does not parse (a raw SFC, an asset) is still registered below,
+        // so resolveId can report against it immediately rather than deferring.
         importMap = new Map()
       }
 
       const graphEntry: ModuleGraphEntry = { code, originalCode, sourceMap, imports: importMap }
       moduleGraph.set(id, graphEntry)
-      // Also store under normalized key forms so enrichAndReport can find it
-      // when the importer path format differs (e.g. with/without query string)
+      // resolveId and transform can see the same module under different id forms.
       /* v8 ignore start -- defensive normalization for framework-specific virtual module IDs */
       const bareId = id.split('?')[0]!
       if (bareId !== id)
@@ -900,9 +860,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       }
       /* v8 ignore stop */
 
-      // Flush any violations that were waiting for this module's transform.
-      // Check multiple key forms since resolveId may use relative paths while
-      // transform receives absolute paths (or vice versa with query strings).
+      // Flush violations that were waiting for this module's transform, under every id
+      // form resolveId may have keyed them by.
       const relativeId = isAbsolute(id) && globalOptions.cwd ? relative(globalOptions.cwd, id) : id
       const candidateKeys = new Set([id, relativeId, id.split('?')[0]!, relativeId.split('?')[0]!])
       for (const key of candidateKeys) {
@@ -916,7 +875,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       }
     }
 
-    // Builder-specific transform hooks that pass getCombinedSourcemap to the shared logic.
     const transformWithSourceMap = {
       transform(this: { getCombinedSourcemap?: () => SourceMap }, code: string, id: string) {
         return traceTransform(code, id, this.getCombinedSourcemap?.bind(this))
@@ -933,7 +891,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     const tracePlugin: UnpluginOptions = {
       name: 'impound:trace',
       resolveId(_id, importer, resolveOptions) {
-        // Track entry points
         if (!importer && resolveOptions?.isEntry) {
           entries.add(_id)
         }
@@ -950,56 +907,49 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     plugins.push(tracePlugin)
   }
 
-  if (traceMode === 'lazy') {
-    // On the main plugin so violations stay attributed to `impound`. No transform hook:
-    // nothing is parsed, no sourcemap forced, nothing retained.
-    Object.assign(plugins[0]!, {
-      async buildEnd(this: UnpluginBuildContext, buildError?: unknown) {
-        // The build is already failing, and the graph it left behind is incomplete.
-        // Reporting here would replace the root cause in the surfaced output.
-        if (buildError || pendingViolations.size === 0) {
-          pendingViolations.clear()
-          return
-        }
+  async function reportHeldViolations(this: UnpluginBuildContext, buildError?: unknown): Promise<void> {
+    // The build is already failing, and the graph it left behind is incomplete.
+    // Reporting here would replace the root cause in the surfaced output.
+    if (buildError || pendingViolations.size === 0) {
+      pendingViolations.clear()
+      return
+    }
 
-        const held: PendingViolation[] = []
-        for (const violations of pendingViolations.values()) {
-          held.push(...violations)
-        }
-        pendingViolations.clear()
+    const held: PendingViolation[] = []
+    for (const violations of pendingViolations.values()) {
+      held.push(...violations)
+    }
+    pendingViolations.clear()
 
-        // `getModuleInfo` and `error` are not part of unplugin's build context, but the
-        // underlying context supplies both on rollup, vite and rolldown.
-        const ctx = this as UnpluginBuildContext & Partial<LazyGraphContext> & { error?: (msg: string) => never }
-        // rollup, vite and rolldown hand us `getModuleInfo` directly. webpack and rspack
-        // keep the same information on `compilation.moduleGraph`, one layer down.
-        const native = typeof ctx.getModuleInfo === 'function'
-          ? undefined
-          : nativeGraphContext(ctx.getNativeBuildContext?.() as NativeGraph | undefined, cwd)
-        const graph: LazyGraphContext | undefined = typeof ctx.getModuleInfo === 'function'
-          ? ctx as LazyGraphContext
-          : native?.graph
-        // Violations cluster in the same files, so their chains overlap.
-        const cache = new Map<string, Map<string, ImportLocation>>()
+    // `getModuleInfo` and `error` are not part of unplugin's build context, but the
+    // underlying context supplies both on rollup, vite and rolldown.
+    const ctx = this as UnpluginBuildContext & Partial<LazyGraphContext> & { error?: (msg: string) => never }
+    // webpack and rspack keep the same information on `compilation.moduleGraph`.
+    const native = typeof ctx.getModuleInfo === 'function'
+      ? undefined
+      : nativeGraphContext(ctx.getNativeBuildContext?.() as NativeGraph | undefined, cwd)
+    const graph: LazyGraphContext | undefined = typeof ctx.getModuleInfo === 'function'
+      ? ctx as LazyGraphContext
+      : native?.graph
+    // Violations cluster in the same files, so their chains overlap.
+    const cache = new Map<string, Map<string, ImportLocation>>()
 
-        for (const violation of held) {
-          const errorFn = violation.useConsoleError
-            ? console.error
-            : typeof ctx.error === 'function'
-              ? ctx.error.bind(ctx)
-              : native?.addError || ((msg: string) => { throw new Error(msg) })
+    for (const violation of held) {
+      const errorFn = violation.useConsoleError
+        ? console.error
+        : typeof ctx.error === 'function'
+          ? ctx.error.bind(ctx)
+          : native?.addError || ((msg: string) => { throw new Error(msg) })
 
-          if (graph) {
-            await enrichAndReportLazy(graph, violation, maxTraceDepth, cwd, errorFn, cache)
-          }
-          else {
-            // No module graph to read (esbuild). Report the plain message rather than
-            // inventing a trace: a single-step trace adds no Trace block.
-            reportViolation(violation, [{ file: violation.relativeImporter }], undefined, cwd, errorFn, violation.warnedMessages)
-          }
-        }
-      },
-    })
+      if (graph) {
+        await enrichAndReportLazy(graph, violation, maxTraceDepth, cwd, errorFn, cache)
+      }
+      else {
+        // No module graph to read (esbuild). Report the plain message rather than
+        // inventing a trace: a single-step trace adds no Trace block.
+        reportViolation(violation, [{ file: violation.relativeImporter }], undefined, cwd, errorFn, violation.warnedMessages)
+      }
+    }
   }
 
   return plugins
