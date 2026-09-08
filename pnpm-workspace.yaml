@@ -6,7 +6,7 @@ packages:
   - playground
 
 overrides:
-  impound: 'link:.'
+  impound: 'workspace:*'
 
 allowBuilds:
   esbuild: false
