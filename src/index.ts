@@ -106,8 +106,9 @@ export interface ImpoundSharedOptions {
    * Enable import tracing and code snippets in violation reports.
    *
    * `true` parses every module and materialises its sourcemap, so snippets point at
-   * original source. `'lazy'` collects nothing and reads the bundler's own graph at
-   * `buildEnd` instead.
+   * original source. On a Vite dev server it parses nothing up front: it walks Vite's
+   * module graph when a violation happens. `'lazy'` collects nothing and reads the
+   * bundler's own graph at `buildEnd` instead.
    *
    * Use `'lazy'` for builds and keep `true` for a dev server: a dev server calls
    * `buildEnd` when it shuts down, so violations would go unreported for the session.
@@ -365,6 +366,53 @@ function formatTrace(trace: ImpoundTraceStep[], cwd?: string): string {
   }).join('\n')
 }
 
+/** Render the snippet for an import, reverse-mapped to original source when a sourcemap is held. */
+function snippetFor(source: ModuleSource, loc: ImportLocation): ImpoundSnippet {
+  let snippetCode = source.code
+  let snippetLine = loc.line
+  let snippetColumn = loc.column
+
+  if (source.sourceMap) {
+    try {
+      const tracer = new TraceMap(source.sourceMap as ConstructorParameters<typeof TraceMap>[0])
+      const original = originalPositionFor(tracer, { line: loc.line, column: loc.column })
+      if (original.line != null) {
+        snippetLine = original.line
+        /* v8 ignore start -- originalPositionFor always returns column and source when line is non-null */
+        snippetColumn = original.column ?? 0
+        // Prefer original source content from the source map
+        const originalSource = original.source != null ? sourceContentFor(tracer, original.source) : null
+        /* v8 ignore stop */
+        if (originalSource != null) {
+          snippetCode = originalSource
+        }
+        else if (source.originalCode) {
+          snippetCode = source.originalCode
+        }
+      }
+    }
+    catch {
+      // Fall back to transformed code positions
+    }
+  }
+
+  return { text: generateSnippet(snippetCode, snippetLine, snippetColumn), line: snippetLine, column: snippetColumn }
+}
+
+/** Read a combined sourcemap, keeping it only when it carries mappings. */
+function readSourceMap(getCombinedSourcemap: () => unknown): Pick<ModuleSource, 'sourceMap' | 'originalCode'> {
+  try {
+    const map = getCombinedSourcemap() as { mappings?: string, sourcesContent?: (string | null)[] } | undefined
+    if (map?.mappings) {
+      return { sourceMap: map, originalCode: map.sourcesContent?.[0] || undefined }
+    }
+  }
+  catch {
+    // getCombinedSourcemap may throw; fall back to transformed code
+  }
+  return {}
+}
+
 function enrichAndReport(
   violation: PendingViolation,
   moduleImports: Map<string, Map<string, ImportLocation>>,
@@ -386,36 +434,7 @@ function enrichAndReport(
   /* v8 ignore stop */
     const loc = findImportLocation(importerImports, rawId, id, importer, cwd)
     if (loc) {
-      let snippetCode = importerSource.code
-      let snippetLine = loc.line
-      let snippetColumn = loc.column
-
-      // If a source map is available, reverse-map to original source positions
-      if (importerSource.sourceMap) {
-        try {
-          const tracer = new TraceMap(importerSource.sourceMap as ConstructorParameters<typeof TraceMap>[0])
-          const original = originalPositionFor(tracer, { line: loc.line, column: loc.column })
-          if (original.line != null) {
-            snippetLine = original.line
-            /* v8 ignore start -- originalPositionFor always returns column and source when line is non-null */
-            snippetColumn = original.column ?? 0
-            // Prefer original source content from the source map
-            const originalSource = original.source != null ? sourceContentFor(tracer, original.source) : null
-            /* v8 ignore stop */
-            if (originalSource != null) {
-              snippetCode = originalSource
-            }
-            else if (importerSource.originalCode) {
-              snippetCode = importerSource.originalCode
-            }
-          }
-        }
-        catch {
-          // Fall back to transformed code positions
-        }
-      }
-
-      snippet = { text: generateSnippet(snippetCode, snippetLine, snippetColumn), line: snippetLine, column: snippetColumn }
+      snippet = snippetFor(importerSource, loc)
     }
   }
 
@@ -638,6 +657,84 @@ async function enrichAndReportLazy(
   reportViolation(violation, trace, snippet, cwd, errorFn, violation.warnedMessages)
 }
 
+/** The slice of a Vite dev environment's module graph the eager path reads. */
+interface DevModuleNode {
+  id: string | null
+  importers: Set<DevModuleNode>
+  transformResult?: { code: string } | null
+}
+interface DevModuleGraph {
+  getModuleById: (id: string) => DevModuleNode | undefined
+}
+
+/** What a transform leaves behind for a module, so a violation can render its snippet. */
+interface DevSource {
+  code: string
+  /** Bound to the module's transform context, for importers a matcher includes. */
+  getCombinedSourcemap?: () => unknown
+}
+
+/** A Vite dev server keeps a live module graph, which the eager path reads instead of its own. */
+function devModuleGraph(ctx: unknown): DevModuleGraph | undefined {
+  const environment = (ctx as { environment?: { mode?: string, moduleGraph?: DevModuleGraph } } | undefined)?.environment
+  return environment?.mode === 'dev' ? environment.moduleGraph : undefined
+}
+
+/**
+ * Adapt Vite's dev module graph to the shape the lazy walk reads. Vite rewrites a module's
+ * importers on every transform, so the chain follows edits without impound tracking edges,
+ * and a module nothing imports is where the browser or runner started.
+ */
+function devGraphContext(graph: DevModuleGraph, sources: WeakMap<DevModuleNode, DevSource>): LazyGraphContext {
+  return {
+    getModuleInfo(id) {
+      const node = graph.getModuleById(id)
+      /* v8 ignore start -- the walk only reaches ids Vite gave its own importers, and every
+         module on it went through the trace transform */
+      if (!node) {
+        return null
+      }
+      const importers: string[] = []
+      for (const importer of node.importers) {
+        if (importer.id) {
+          importers.push(importer.id)
+        }
+      }
+      return { code: sources.get(node)?.code ?? node.transformResult?.code, importers, isEntry: importers.length === 0 }
+      /* v8 ignore stop */
+    },
+  }
+}
+
+/**
+ * Report a violation against Vite's dev graph. Synchronous, so `error: true` still fails the
+ * request. The lexer is ready by now: the importer's transform awaited it.
+ */
+function enrichAndReportDev(
+  graph: DevModuleGraph,
+  sources: WeakMap<DevModuleNode, DevSource>,
+  source: DevSource,
+  violation: PendingViolation,
+  maxTraceDepth: number,
+  cwd: string | undefined,
+): void {
+  const cache = new Map<string, Map<string, ImportLocation>>()
+  const trace = buildTrace(lazyGraph(devGraphContext(graph, sources), cwd, cache), violation.importer, maxTraceDepth)
+
+  let snippet: ImpoundSnippet | undefined
+  const loc = findImportLocation(lexImports(cache, violation.importer, source.code), violation.rawId, violation.id, violation.importer, cwd)
+  if (loc) {
+    // Vite collapses the sourcemap chain into its context as it goes, so reading it here,
+    // before import analysis adds its own, maps exactly the code that was kept.
+    /* v8 ignore next -- the importer passed a matcher, so its sourcemap getter was kept */
+    const map = source.getCombinedSourcemap ? readSourceMap(source.getCombinedSourcemap) : {}
+    snippet = snippetFor({ code: source.code, ...map }, loc)
+  }
+
+  // Only the lazy path leaves errorFn unset.
+  reportViolation(violation, trace, snippet, cwd, violation.errorFn!, violation.warnedMessages)
+}
+
 export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const matchers = 'matchers' in globalOptions ? globalOptions.matchers : [globalOptions]
   // 'eager' collects the graph during transform, 'lazy' reads the bundler's at buildEnd.
@@ -659,6 +756,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   // Keys already held, so a dev server resolving the same import on every reload does not
   // accumulate violations that would all collapse to one message at report time.
   const heldMessages = new Set<string>()
+  // On a Vite dev server, each module's latest transform output, tied to Vite's own graph
+  // node so a re-transform replaces it and a dropped module takes it with it.
+  const devSources = new WeakMap<DevModuleNode, DevSource>()
 
   const cwd = globalOptions.cwd
 
@@ -756,10 +856,12 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       let resolvedId: string | undefined
       let relativeId: string | undefined
       let relativeImporter: string | undefined
+      const devGraph = traceMode === 'eager' ? devModuleGraph(this) : undefined
 
       // The backwards walk crosses ancestors that no matcher includes, so every edge
-      // is recorded and not only those from included importers.
-      if (traceMode === 'eager') {
+      // is recorded and not only those from included importers. A dev server's own
+      // graph already has them.
+      if (traceMode === 'eager' && !devGraph) {
         resolvedId = RELATIVE_IMPORT_RE.test(rawId)
           ? join(stripQuery(importer), '..', rawId)
           : rawId
@@ -830,7 +932,12 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
                 warnedMessages,
               }
 
-              if (traceMode === 'eager' && moduleImports.has(importer)) {
+              const devNode = devGraph?.getModuleById(importer)
+              const devSource = devNode && devSources.get(devNode)
+              if (devGraph && devSource) {
+                enrichAndReportDev(devGraph, devSources, devSource, violation, maxTraceDepth, cwd)
+              }
+              else if (!devGraph && traceMode === 'eager' && moduleImports.has(importer)) {
                 enrichAndReport(violation, moduleImports, moduleSources, getEagerGraph(), maxTraceDepth, cwd, warnedMessages)
               }
               else {
@@ -879,19 +986,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
         // The combined source map is what lets snippets point at original source.
         if (tracked && getCombinedSourcemap) {
-          try {
-            const map = getCombinedSourcemap() as { mappings?: string, sourcesContent?: (string | null)[] } | undefined
-            if (map?.mappings) {
-              sourceMap = map
-              const sourcesContent = map.sourcesContent
-              if (sourcesContent?.length && sourcesContent[0]) {
-                originalCode = sourcesContent[0]
-              }
-            }
-          }
-          catch {
-            // getCombinedSourcemap may throw; fall back to transformed code
-          }
+          ({ sourceMap, originalCode } = readSourceMap(getCombinedSourcemap))
         }
       }
       catch {
@@ -942,20 +1037,47 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       }
     }
 
-    function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown): Promise<void> | undefined {
+    /**
+     * On a dev server, keep only what a snippet needs. Lexing and the sourcemap wait for a
+     * violation, and the chain comes from Vite's graph.
+     */
+    function rememberDevModule(graph: DevModuleGraph, code: string, id: string, getCombinedSourcemap?: () => unknown): void {
+      const node = graph.getModuleById(id)
+      /* v8 ignore next 3 -- Vite creates a module's node before transforming it */
+      if (!node) {
+        return
+      }
+      // Only an included module can be a violation's importer, so only it needs a sourcemap.
+      const source: DevSource = { code, getCombinedSourcemap: includedByAny(id) ? getCombinedSourcemap : undefined }
+      devSources.set(node, source)
+
+      // Resolved before its transform, e.g. by the dependency scanner.
+      const pending = pendingViolations.get(id)
+      if (pending) {
+        pendingViolations.delete(id)
+        for (const violation of pending) {
+          enrichAndReportDev(graph, devSources, source, violation, maxTraceDepth, cwd)
+        }
+      }
+    }
+
+    function traceTransform(code: string, id: string, getCombinedSourcemap?: () => unknown, devGraph?: DevModuleGraph): Promise<void> | undefined {
       if (BINARY_ASSET_RE.test(id))
         return
 
+      const record = devGraph
+        ? () => rememberDevModule(devGraph, code, id, getCombinedSourcemap)
+        : () => registerModule(code, id, getCombinedSourcemap)
       const pending = whenLexerReady()
       if (pending) {
-        return pending.then(() => registerModule(code, id, getCombinedSourcemap))
+        return pending.then(record)
       }
-      registerModule(code, id, getCombinedSourcemap)
+      record()
     }
 
     const transformWithSourceMap = {
       transform(this: { getCombinedSourcemap?: () => SourceMap }, code: string, id: string) {
-        return traceTransform(code, id, this.getCombinedSourcemap?.bind(this))
+        return traceTransform(code, id, this.getCombinedSourcemap?.bind(this), devModuleGraph(this))
       },
     }
 

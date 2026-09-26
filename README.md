@@ -84,6 +84,11 @@ source retained, so snippets can point at original source.
 A narrow `include` therefore keeps eager tracing cheap: only modules that could be the
 importer in a violation are retained.
 
+On a Vite dev server, `trace: true` records no graph of its own. It keeps each module's
+latest transform output, and on a violation it walks Vite's module graph, which Vite
+updates on every edit. So nothing is parsed until a violation happens, and the chain
+follows imports that have moved since the server started.
+
 `trace: 'lazy'` records nothing, and reads the bundler's own module graph when a
 violation actually happens.
 
