@@ -106,9 +106,9 @@ export interface ImpoundSharedOptions {
    * Enable import tracing and code snippets in violation reports.
    *
    * `true` parses every module and materialises its sourcemap, so snippets point at
-   * original source. On a Vite dev server it parses nothing up front: it walks Vite's
-   * module graph when a violation happens. `'lazy'` collects nothing and reads the
-   * bundler's own graph at `buildEnd` instead.
+   * original source. On a Vite dev server and on webpack it parses nothing up front: it
+   * walks the bundler's module graph when a violation happens. `'lazy'` collects nothing
+   * and reads the bundler's own graph at `buildEnd` instead.
    *
    * Use `'lazy'` for builds and keep `true` for a dev server: a dev server calls
    * `buildEnd` when it shuts down, so violations would go unreported for the session.
@@ -640,7 +640,18 @@ async function enrichAndReportLazy(
   cache: Map<string, Map<string, ImportLocation>>,
 ): Promise<void> {
   await whenLexerReady()
+  reportFromGraph(ctx, violation, maxTraceDepth, cwd, errorFn, cache)
+}
 
+/** Walk a bundler's graph for a violation and report it. The lexer must already be ready. */
+function reportFromGraph(
+  ctx: LazyGraphContext,
+  violation: PendingViolation,
+  maxTraceDepth: number,
+  cwd: string | undefined,
+  errorFn: (msg: string) => void,
+  cache: Map<string, Map<string, ImportLocation>>,
+): void {
   const trace = buildTrace(lazyGraph(ctx, cwd, cache), violation.importer, maxTraceDepth)
 
   let snippet: ImpoundSnippet | undefined
@@ -735,13 +746,16 @@ function enrichAndReportDev(
   reportViolation(violation, trace, snippet, cwd, violation.errorFn!, violation.warnedMessages)
 }
 
-export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
+export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta) => {
   const matchers = 'matchers' in globalOptions ? globalOptions.matchers : [globalOptions]
   // 'eager' collects the graph during transform, 'lazy' reads the bundler's at buildEnd.
   const traceMode: 'off' | 'eager' | 'lazy' = globalOptions.trace === 'lazy'
     ? 'lazy'
     : globalOptions.trace === true ? 'eager' : 'off'
   const traceEnabled = traceMode !== 'off'
+  // webpack lets a plugin read the compilation's module graph while it is being built, so
+  // eager tracing reads that instead of recording its own. rspack locks it until then.
+  const nativeEager = traceMode === 'eager' && meta.framework === 'webpack'
   const maxTraceDepth = globalOptions.maxTraceDepth ?? 20
 
   const moduleImports = new Map<string, Map<string, ImportLocation>>()
@@ -759,8 +773,17 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   // On a Vite dev server, each module's latest transform output, tied to Vite's own graph
   // node so a re-transform replaces it and a dropped module takes it with it.
   const devSources = new WeakMap<DevModuleNode, DevSource>()
+  // webpack runs its resolver outside a compilation, so the current one is kept per compiler.
+  const compilations = new WeakMap<object, NativeGraph['compilation']>()
 
   const cwd = globalOptions.cwd
+
+  /** The module graph of the webpack compilation a resolve belongs to. */
+  function nativeEagerGraph(ctx: unknown): LazyGraphContext | undefined {
+    const native = (ctx as Partial<UnpluginBuildContext>).getNativeBuildContext?.() as { compiler?: object } & NativeGraph | undefined
+    const compilation = native?.compilation ?? (native?.compiler && compilations.get(native.compiler))
+    return nativeGraphContext({ compilation }, cwd)?.graph
+  }
 
   function hold(importer: string, violation: PendingViolation): void {
     if (violation.warnedMessages) {
@@ -828,6 +851,15 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     enforce: 'pre' as const,
     // Reports any violation still held once the build's graph is complete.
     ...(traceEnabled ? { buildEnd: reportHeldViolations } : {}),
+    ...(nativeEager
+      ? {
+          // Nothing is transformed through impound here, so the lexer is readied up front.
+          buildStart: () => whenLexerReady(),
+          webpack: (compiler: { hooks: { thisCompilation: { tap: (name: string, fn: (compilation: NonNullable<NativeGraph['compilation']>) => void) => void } } }) => {
+            compiler.hooks.thisCompilation.tap('impound', compilation => compilations.set(compiler, compilation))
+          },
+        }
+      : {}),
     load: {
       filter: { id: PROXY_ID_RE },
       handler(id: string) {
@@ -859,9 +891,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       const devGraph = traceMode === 'eager' ? devModuleGraph(this) : undefined
 
       // The backwards walk crosses ancestors that no matcher includes, so every edge
-      // is recorded and not only those from included importers. A dev server's own
-      // graph already has them.
-      if (traceMode === 'eager' && !devGraph) {
+      // is recorded and not only those from included importers. A Vite dev server's and
+      // a webpack compilation's own graph already have them.
+      if (traceMode === 'eager' && !devGraph && !nativeEager) {
         resolvedId = RELATIVE_IMPORT_RE.test(rawId)
           ? join(stripQuery(importer), '..', rawId)
           : rawId
@@ -934,8 +966,14 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
               const devNode = devGraph?.getModuleById(importer)
               const devSource = devNode && devSources.get(devNode)
+              const nativeGraph = nativeEager ? nativeEagerGraph(this) : undefined
               if (devGraph && devSource) {
                 enrichAndReportDev(devGraph, devSources, devSource, violation, maxTraceDepth, cwd)
+              }
+              else if (nativeGraph) {
+                // The importer has been built by the time its imports resolve, and so has
+                // every module above it, so the chain can be read now.
+                reportFromGraph(nativeGraph, violation, maxTraceDepth, cwd, violation.errorFn!, new Map())
               }
               else if (!devGraph && traceMode === 'eager' && moduleImports.has(importer)) {
                 enrichAndReport(violation, moduleImports, moduleSources, getEagerGraph(), maxTraceDepth, cwd, warnedMessages)
@@ -971,7 +1009,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     },
   }]
 
-  if (traceMode === 'eager') {
+  if (traceMode === 'eager' && !nativeEager) {
     function registerModule(code: string, id: string, getCombinedSourcemap?: () => unknown): void {
       // Snippets are only ever rendered for a violation's importer, which by definition
       // passed a matcher's filter, so nothing else needs its code or sourcemap retained.

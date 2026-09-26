@@ -89,6 +89,12 @@ latest transform output, and on a violation it walks Vite's module graph, which 
 updates on every edit. So nothing is parsed until a violation happens, and the chain
 follows imports that have moved since the server started.
 
+On webpack it does the same with the compilation's module graph, so nothing is parsed
+per module there either, and the snippet comes from `originalSource()`. rspack does not
+expose that graph while a compilation is being built, so there eager tracing records its
+own and does not find the entry, which means it reports the snippet but no chain. Use
+`'lazy'` to get a chain on rspack.
+
 `trace: 'lazy'` records nothing, and reads the bundler's own module graph when a
 violation actually happens.
 

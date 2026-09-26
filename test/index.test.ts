@@ -1257,6 +1257,54 @@ describe('trace mode (lazy) on webpack and rspack', () => {
   })
 })
 
+describe('trace mode (eager) on webpack', () => {
+  const mod = (resource: string, code: string) => ({ resource, originalSource: () => ({ source: () => code }) })
+  const entry = mod('/p/entry.js', 'import { loadAuth } from "./session.js"')
+  const session = mod('/p/session.js', 'import { getUsers } from "./queries.server"\nexport const loadAuth = getUsers')
+  const incoming = new Map<unknown, { originModule: unknown }[]>([
+    [entry, [{ originModule: null }]],
+    [session, [{ originModule: entry }]],
+  ])
+  const compilation = { modules: [entry, session], moduleGraph: { getIncomingConnections: (m: unknown) => incoming.get(m) ?? [] } }
+
+  const plugins = () => {
+    const raw = ImpoundPlugin.raw({ cwd: '/p', trace: true, patterns: [['queries.server', 'Server-only']] }, { framework: 'webpack', versions: {}, webpack: { compiler: {} } } as any)
+    return Array.isArray(raw) ? raw : [raw]
+  }
+  const resolve = async (plugin: any, native: Record<string, unknown>) => {
+    const errors: string[] = []
+    await plugin.resolveId.call({ getNativeBuildContext: () => ({ framework: 'webpack', ...native }), error: (msg: string) => errors.push(msg) }, './queries.server', '/p/session.js')
+    return errors.join('\n')
+  }
+
+  it('records nothing per module', async () => {
+    const all = plugins()
+    expect(all.map(p => p.name)).toEqual(['impound'])
+    await (all[0] as any).buildStart()
+  })
+
+  it('reads the chain from the compilation while it is being built', async () => {
+    const message = await resolve(plugins()[0], { compilation })
+    expect(message).toContain('Server-only [importing `queries.server` from `session.js`]')
+    expect(message).toContain('1. entry.js:1:26 (entry) (import "./session.js")')
+    expect(message).toContain('2. session.js')
+    expect(message).toContain('> 1 | import { getUsers } from "./queries.server"')
+  })
+
+  it('finds the compilation through its compiler, since webpack resolves outside one', async () => {
+    const plugin = plugins()[0] as any
+    const compiler = { hooks: { thisCompilation: { tap: (_: string, fn: (c: unknown) => void) => fn(compilation) } } }
+    plugin.webpack(compiler)
+    expect(await resolve(plugin, { compiler })).toContain('1. entry.js')
+  })
+
+  it('holds the violation for buildEnd when no compilation is reachable', async () => {
+    const plugin = plugins()[0] as any
+    expect(await resolve(plugin, {})).toBe('')
+    await expect(plugin.buildEnd.call({})).rejects.toThrow('Server-only')
+  })
+})
+
 describe('reporting when the build is already failing', () => {
   const lazy = () => {
     const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Denied']] })
