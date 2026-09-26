@@ -2,9 +2,10 @@ import type { SourceMap } from 'rollup'
 import type { UnpluginBuildContext, UnpluginContext, UnpluginOptions } from 'unplugin'
 import { originalPositionFor, sourceContentFor, TraceMap } from '@jridgewell/trace-mapping'
 import { init, parse } from 'es-module-lexer'
-import { isAbsolute, join, relative } from 'pathe'
+import { isAbsolute, join } from 'pathe'
 import { createUnplugin } from 'unplugin'
 import { createFilter } from 'unplugin-utils'
+import { relativeToCwd, toRelative } from './path'
 
 const PROXY_ID = '\0impound:proxy'
 const PROXY_ID_RE = /^\0impound:proxy$/
@@ -238,7 +239,7 @@ function findImportLocation(
     const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(importerBase, '..', specifier) : specifier
     let normalizedResolved = resolved
     if (cwd && isAbsolute(resolved)) {
-      normalizedResolved = relative(cwd, resolved)
+      normalizedResolved = relativeToCwd(cwd, resolved)
     }
     // The suffix match needs a path boundary, or `./data.js` matches a step for `a.js`.
     if (normalizedResolved === id || resolved === rawId || specifier === id || specifier.endsWith(`/${id}`)) {
@@ -321,7 +322,7 @@ function eagerGraph(
   entries: Set<string>,
   cwd?: string,
 ): TraceGraph {
-  const normalize = (p: string) => isAbsolute(p) && cwd ? relative(cwd, p) : p
+  const normalize = (p: string) => toRelative(p, cwd)
 
   const importersOf = new Map<string, string[]>()
   for (const [moduleId, imports] of resolvedImports) {
@@ -356,7 +357,7 @@ function eagerGraph(
 
 function formatTrace(trace: ImpoundTraceStep[], cwd?: string): string {
   return trace.map((step, i) => {
-    const file = cwd && isAbsolute(step.file) ? relative(cwd, step.file) : step.file
+    const file = toRelative(step.file, cwd)
     const loc = step.line != null ? `:${step.line}:${step.column}` : ''
     const entry = i === 0 ? ' (entry)' : ''
     const imp = step.import ? ` (import "${step.import}")` : ''
@@ -539,7 +540,7 @@ function lazyGraph(
       if (!code) {
         return
       }
-      const nextRelative = isAbsolute(next) && cwd ? relative(cwd, next) : next
+      const nextRelative = toRelative(next, cwd)
       for (const [specifier, loc] of lexImports(cache, file, code)) {
         const resolved = RELATIVE_IMPORT_RE.test(specifier) ? join(stripQuery(file), '..', specifier) : specifier
         // The suffix match needs a path boundary, or `./data.js` matches `a.js`.
@@ -571,7 +572,7 @@ function nativeGraphContext(native: NativeGraph | undefined, cwd: string | undef
     }
     byId.set(resource, module)
     if (cwd && isAbsolute(resource)) {
-      byId.set(relative(cwd, resource), module)
+      byId.set(relativeToCwd(cwd, resource), module)
     }
   }
 
@@ -762,7 +763,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
         resolvedId = RELATIVE_IMPORT_RE.test(rawId)
           ? join(stripQuery(importer), '..', rawId)
           : rawId
-        relativeId = isAbsolute(resolvedId) && cwd ? relative(cwd, resolvedId) : resolvedId
+        relativeId = toRelative(resolvedId, cwd)
         let importerResolved = resolvedImports.get(importer)
         if (!importerResolved) {
           importerResolved = new Map()
@@ -787,13 +788,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
           continue
         }
 
-        relativeId ??= isAbsolute(resolvedId) && cwd ? relative(cwd, resolvedId) : resolvedId
+        relativeId ??= toRelative(resolvedId, cwd)
         const id = relativeId
 
         if (relativeImporter === undefined) {
           relativeImporter = relativeImporterCache.get(importer)
           if (relativeImporter === undefined) {
-            relativeImporter = isAbsolute(importer) && cwd ? relative(cwd, importer) : importer
+            relativeImporter = toRelative(importer, cwd)
             relativeImporterCache.set(importer, relativeImporter)
           }
         }
@@ -913,11 +914,11 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
       const bareId = stripQuery(id)
       if (bareId !== id)
         register(bareId)
-      if (isAbsolute(id) && cwd) {
-        const relId = relative(cwd, id)
-        register(relId)
-        const relBareId = stripQuery(relId)
-        if (relBareId !== relId)
+      const relativeId = toRelative(id, cwd)
+      if (relativeId !== id) {
+        register(relativeId)
+        const relBareId = stripQuery(relativeId)
+        if (relBareId !== relativeId)
           register(relBareId)
       }
       /* v8 ignore stop */
@@ -929,7 +930,6 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
 
       // Flush violations that were waiting for this module's transform, under every id
       // form resolveId may have keyed them by.
-      const relativeId = isAbsolute(id) && cwd ? relative(cwd, id) : id
       const candidateKeys = new Set([id, relativeId, bareId, stripQuery(relativeId)])
       for (const key of candidateKeys) {
         const pending = pendingViolations.get(key)
