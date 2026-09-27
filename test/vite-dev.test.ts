@@ -101,6 +101,19 @@ describe('trace mode on a vite dev server', () => {
     expect(violations[0]!.snippet?.text).toContain('> 1 | import \'./secret.js\'')
   })
 
+  it('walks through modules outside include', async () => {
+    const { violations, load } = await devServer({
+      'e.js': 'import \'./a.js\'\n',
+      'a.js': 'import \'./b.js\'\n',
+      'b.js': 'import \'./secret.js\'\n',
+      'secret.js': 'export const s = 1\n',
+    }, { include: [/b\.js$/] })
+    await load('/e.js', '/a.js', '/b.js')
+
+    expect(chain(violations[0])).toEqual(['e.js', 'a.js', 'b.js'])
+    expect(violations[0]!.snippet?.text).toContain('> 1 | import \'./secret.js\'')
+  })
+
   it('follows the chain after an import moves between modules', async () => {
     const { violations, load, edit } = await devServer({
       'e.js': 'import \'./a.js\'\nimport \'./b.js\'\n',

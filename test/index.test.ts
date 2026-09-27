@@ -1356,6 +1356,48 @@ describe('trace mode (eager) on rspack', () => {
   })
 })
 
+describe('virtual modules', () => {
+  // A plugin's virtual module, under rollup's `\0` convention, that imports a denied module.
+  const build = async (opts: Partial<ImpoundOptions>) => {
+    const bundle = await rollup({
+      input: 'entry.js',
+      onwarn() {},
+      plugins: [
+        ImpoundPlugin.rollup({ patterns: [['secret', 'Server-only']], ...opts } as ImpoundOptions),
+        {
+          name: 'virtual',
+          resolveId: id => id === 'virtual:mod' ? '\0virtual:mod' : ['entry.js', 'secret'].includes(id) ? id : undefined,
+          load: id => ({
+            'entry.js': 'import v from "virtual:mod";console.log(v)',
+            '\0virtual:mod': 'import secret from "secret";export default secret',
+            'secret': 'export default "TOP-SECRET"',
+          } as Record<string, string>)[id],
+        },
+      ],
+    })
+    return (await bundle.generate({})).output[0].code
+  }
+
+  it('checks the imports of a virtual module', async () => {
+    await expect(build({})).rejects.toThrow('Server-only [importing `secret` from `\0virtual:mod`]')
+  })
+
+  it('checks a virtual importer that rspack hands over as /\\0id', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    const raw = ImpoundPlugin.raw({ error: false, patterns: [['secret.js', 'Server-only']], onViolation: info => void violations.push(info) }, { framework: 'rspack', versions: {} } as any)
+    const main = (Array.isArray(raw) ? raw : [raw]).find(p => p.name === 'impound') as any
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await main.resolveId.call({ error: () => {} }, 'secret.js', '/\0virtual-mod')).toBe('\0impound:proxy')
+    expect(violations).toHaveLength(1)
+    vi.restoreAllMocks()
+  })
+
+  it('still limits virtual modules to include', async () => {
+    const code = await build({ include: [/^src\//] })
+    expect(code).toContain('TOP-SECRET')
+  })
+})
+
 describe('reporting when the build is already failing', () => {
   const lazy = () => {
     const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Denied']] })

@@ -837,7 +837,10 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta
   function includes(matcher: MatcherState, id: string): boolean {
     let included = matcher.filterCache.get(id)
     if (included === undefined) {
-      included = matcher.filter(id)
+      // createFilter rejects any id containing `\0`, rollup's convention for virtual modules
+      // in transforms. A virtual module can still import something denied, so it is matched
+      // on its id without the marker. rspack hands it over as `/\0id`.
+      included = matcher.filter(id.includes('\0') ? id.replaceAll('\0', '') : id)
       matcher.filterCache.set(id, included)
     }
     return included
