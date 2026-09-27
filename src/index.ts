@@ -345,9 +345,11 @@ function eagerGraph(
     parents: id => importersOf.get(id) || importersOf.get(normalize(id)) || [],
     isEntry: id => entries.has(id) || entries.has(normalize(id)),
     importOf(file, next) {
+      // Edges hold the target relative to cwd, while the walk carries module ids.
+      const nextRelative = normalize(next)
       /* v8 ignore next -- the walk only reaches files that have resolved imports */
       for (const [specifier, resolvedId] of resolvedImports.get(file) || []) {
-        if (resolvedId === next) {
+        if (resolvedId === next || resolvedId === nextRelative) {
           const loc = moduleImports.get(file)?.get(specifier)
           return { specifier, line: loc?.line, column: loc?.column }
         }
@@ -764,6 +766,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta
   const moduleSources = new Map<string, ModuleSource>()
   // Maps moduleId -> Map<rawSpecifier, resolvedAbsoluteId>
   const resolvedImports = new Map<string, Map<string, string>>()
+  // Importers transformed since their edges were recorded. Their edges are replaced on the
+  // next resolve, and kept when a bundler does not resolve the module again.
+  const staleEdges = new Set<string>()
   const entries = new Set<string>()
   // Violations waiting for the importer's transform (eager) or for the graph (lazy)
   const pendingViolations = new Map<string, PendingViolation[]>()
@@ -777,6 +782,16 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta
   const compilations = new WeakMap<object, NativeGraph['compilation']>()
 
   const cwd = globalOptions.cwd
+
+  /**
+   * rspack and webpack resolve an entry as it was written, relative to the compiler's
+   * context, while every importer after it arrives as an absolute path.
+   */
+  function entryId(ctx: unknown, id: string): string {
+    const native = (ctx as Partial<UnpluginBuildContext>).getNativeBuildContext?.() as { compiler?: { context?: string } } | undefined
+    const context = native?.compiler?.context
+    return context && RELATIVE_IMPORT_RE.test(id) ? join(context, id) : id
+  }
 
   /** The module graph of the webpack compilation a resolve belongs to. */
   function nativeEagerGraph(ctx: unknown): LazyGraphContext | undefined {
@@ -877,7 +892,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta
       }
       if (!importer) {
         if (traceMode === 'eager' && resolveOptions?.isEntry) {
-          entries.add(id)
+          entries.add(entryId(this, id))
           cachedEagerGraph = undefined
         }
         return
@@ -898,7 +913,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta
           ? join(stripQuery(importer), '..', rawId)
           : rawId
         relativeId = toRelative(resolvedId, cwd)
-        let importerResolved = resolvedImports.get(importer)
+        let importerResolved = staleEdges.delete(importer) ? undefined : resolvedImports.get(importer)
         if (!importerResolved) {
           importerResolved = new Map()
           resolvedImports.set(importer, importerResolved)
@@ -1055,6 +1070,10 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions, meta
           register(relBareId)
       }
       /* v8 ignore stop */
+      // Edges recorded for an earlier version of this module would keep an import that has
+      // since been removed, so its next resolve starts them afresh.
+      staleEdges.add(id)
+      staleEdges.add(bareId)
       cachedEagerGraph = undefined
 
       if (pendingViolations.size === 0) {

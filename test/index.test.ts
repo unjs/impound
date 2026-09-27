@@ -1305,6 +1305,57 @@ describe('trace mode (eager) on webpack', () => {
   })
 })
 
+describe('trace mode (eager) on rspack', () => {
+  // rspack keeps its module graph locked while a compilation is being built, so eager
+  // tracing records its own, and has to recognise the entry rspack resolves as written.
+  const setup = () => {
+    const violations: ImpoundViolationInfo[] = []
+    const raw = ImpoundPlugin.raw({ cwd: '/p', trace: true, error: false, warn: 'always', patterns: [[/secret/, 'Server-only']], onViolation: info => void violations.push(info) }, { framework: 'rspack', versions: {} } as any)
+    const all = Array.isArray(raw) ? raw : [raw]
+    const main = all.find(p => p.name === 'impound') as any
+    const trace = all.find(p => p.name === 'impound:trace') as any
+    const ctx = { getNativeBuildContext: () => ({ framework: 'rspack', compiler: { context: '/p' } }), error: () => {} }
+    const transform = (code: string, id: string) => (trace.transform.handler ?? trace.transform).call(ctx, code, id)
+    const resolve = (id: string, importer?: string) => main.resolveId.call(ctx, id, importer, { isEntry: !importer })
+    return { violations, transform, resolve, chain: () => violations.at(-1)?.trace?.map(s => s.file) }
+  }
+
+  it('finds the entry rspack resolves relative to its context', async () => {
+    const { transform, resolve, chain } = setup()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await resolve('./e.js')
+    await transform('import "./b.js"', '/p/e.js')
+    await resolve('./b.js', '/p/e.js')
+    await transform('import "./secret.js"', '/p/b.js')
+    await resolve('./secret.js', '/p/b.js')
+    expect(chain()).toEqual(['/p/e.js', '/p/b.js'])
+    vi.restoreAllMocks()
+  })
+
+  it('drops the edges of a removed import once the module resolves again', async () => {
+    const { transform, resolve, chain } = setup()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await resolve('./e.js')
+    await transform('import "./a.js"\nimport "./b.js"', '/p/e.js')
+    await resolve('./a.js', '/p/e.js')
+    await resolve('./b.js', '/p/e.js')
+    await transform('export {}', '/p/a.js')
+    await transform('import "./secret.js"', '/p/b.js')
+    await resolve('./secret.js', '/p/b.js')
+    expect(chain()).toEqual(['/p/e.js', '/p/b.js'])
+
+    // e.js stops importing b.js, and a.js starts to.
+    await transform('import "./a.js"', '/p/e.js')
+    await resolve('./a.js', '/p/e.js')
+    await transform('import "./b.js"', '/p/a.js')
+    await resolve('./b.js', '/p/a.js')
+    await transform('import "./secret.js"', '/p/b.js')
+    await resolve('./secret.js', '/p/b.js')
+    expect(chain()).toEqual(['/p/e.js', '/p/a.js', '/p/b.js'])
+    vi.restoreAllMocks()
+  })
+})
+
 describe('reporting when the build is already failing', () => {
   const lazy = () => {
     const plugins = ImpoundPlugin.rollup({ trace: 'lazy', patterns: [['secret', 'Denied']] })
@@ -1389,6 +1440,21 @@ describe('trace mode parity on a real build', () => {
       expect(message).toContain('2. middle.js')
       expect(message).toContain('import secret from "secret"')
       expect(message).toContain('Use a server function')
+    }
+  })
+
+  it('names the import at each step when ids are absolute under cwd', async () => {
+    const absolute = {
+      '/root/entry.js': 'import middle from "/root/middle.js";console.log(middle)',
+      '/root/middle.js': 'import secret from "secret";export default secret',
+    }
+    const [eager, lazy] = await Promise.all([
+      buildWithTrace(absolute, ['secret'], { cwd: '/root', trace: true, patterns: [['secret']] }),
+      buildWithTrace(absolute, ['secret'], { cwd: '/root', trace: 'lazy', patterns: [['secret']] }),
+    ]) as [RollupError, RollupError]
+
+    for (const { message } of [eager, lazy]) {
+      expect(message).toContain('1. entry.js:1:20 (entry) (import "/root/middle.js")')
     }
   })
 
