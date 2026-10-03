@@ -1791,3 +1791,113 @@ describe('hook filters', () => {
     expect(excludeFilter.exclude.test('/app/entry.js')).toBe(false)
   })
 })
+
+describe('trace state lifecycle', () => {
+  it('releases trace and warning state after a non-watch build', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const plugins = ImpoundPlugin.rollup({
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+    }) as any[]
+    const impoundPlugin = plugins.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = plugins.find(plugin => plugin.name === 'impound:trace')!
+    const code = 'import secret from "secret"; export default secret'
+
+    await impoundPlugin.buildStart.call({ meta: { watchMode: false } })
+    await tracePlugin.transform.call({}, code, 'entry.js')
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+
+    await impoundPlugin.buildEnd.call({})
+
+    // A second one-shot build gets a fresh warning set and can report again.
+    await tracePlugin.transform.call({}, code, 'entry.js')
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+    expect(errorSpy).toHaveBeenCalledTimes(2)
+    errorSpy.mockRestore()
+  })
+
+  it('retains trace state across watch rebuilds', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    const plugins = ImpoundPlugin.rollup({
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: info => void violations.push(info),
+    }) as any[]
+    const impoundPlugin = plugins.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = plugins.find(plugin => plugin.name === 'impound:trace')!
+    const code = 'import secret from "secret"; export default secret'
+
+    await impoundPlugin.buildStart.call({ meta: { watchMode: true } })
+    await tracePlugin.transform.call({}, code, 'entry.js')
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+    await impoundPlugin.buildEnd.call({})
+
+    // The importer remains registered, so a watch rebuild reports immediately.
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+    expect(violations).toHaveLength(2)
+  })
+
+  it('cleans trace state after a failed watch build', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    const plugins = ImpoundPlugin.rollup({
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: info => void violations.push(info),
+    }) as any[]
+    const impoundPlugin = plugins.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = plugins.find(plugin => plugin.name === 'impound:trace')!
+    const code = 'import secret from "secret"; export default secret'
+
+    await impoundPlugin.buildStart.call({ meta: { watchMode: true } })
+    await tracePlugin.transform.call({}, code, 'entry.js')
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+    expect(violations).toHaveLength(1)
+
+    await impoundPlugin.buildEnd.call({}, new Error('build failed'))
+
+    // A failed watch build cannot safely reuse its incomplete graph.
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'entry.js')
+    expect(violations).toHaveLength(1)
+
+    await tracePlugin.transform.call({}, code, 'entry.js')
+    expect(violations).toHaveLength(2)
+  })
+
+  it('cleans trace state when deferred reporting throws', async () => {
+    const violations: ImpoundViolationInfo[] = []
+    let failReporting = true
+    const plugins = ImpoundPlugin.rollup({
+      trace: true,
+      patterns: [['secret']],
+      error: false,
+      onViolation: (info) => {
+        if (failReporting) {
+          failReporting = false
+          throw new Error('report failed')
+        }
+        violations.push(info)
+        return false
+      },
+    }) as any[]
+    const impoundPlugin = plugins.find(plugin => plugin.name === 'impound')!
+    const tracePlugin = plugins.find(plugin => plugin.name === 'impound:trace')!
+    const code = 'import secret from "secret"; export default secret'
+
+    await impoundPlugin.buildStart.call({ meta: { watchMode: true } })
+    await tracePlugin.transform.call({}, code, 'registered.js')
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'pending.js')
+
+    await expect(impoundPlugin.buildEnd.call({})).rejects.toThrow('report failed')
+
+    // Reporting failed, so even watch mode must start from a fresh graph.
+    await impoundPlugin.resolveId.call({ error: () => {} }, 'secret', 'registered.js')
+    expect(violations).toHaveLength(0)
+
+    await tracePlugin.transform.call({}, code, 'registered.js')
+    expect(violations).toHaveLength(1)
+  })
+})
