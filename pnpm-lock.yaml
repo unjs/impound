@@ -173,8 +173,8 @@ importers:
         specifier: ^0.3.31
         version: 0.3.31
       es-module-lexer:
-        specifier: ^2.0.0
-        version: 2.3.2
+        specifier: ^3.0.0
+        version: 3.0.3
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
@@ -1209,6 +1209,9 @@ packages:
 
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
+
+  es-module-lexer@3.0.3:
+    resolution: {integrity: sha512-yWGe1O/j+almnV4hOYrmZo8u58JdnmXEMneRQAYkWtqSiT86yoMIEKF4rpqEDj52tbYl3xceBD3DQIBwcsC9Pw==}
 
   escalade@3.2.0:
     resolution: {integrity: sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==}
@@ -3318,6 +3321,8 @@ snapshots:
   entities@7.0.1: {}
 
   es-module-lexer@2.3.2: {}
+
+  es-module-lexer@3.0.3: {}
 
   escalade@3.2.0: {}
 
