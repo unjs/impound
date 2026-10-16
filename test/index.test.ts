@@ -1295,6 +1295,17 @@ describe('virtual modules', () => {
     }
   })
 
+  it('does not remove null bytes inside an importer id', async () => {
+    const raw = ImpoundPlugin.raw({ patterns: [['secret.js']] }, { framework: 'rollup', versions: {} })
+    const plugin = (Array.isArray(raw) ? raw : [raw]).find(p => p.name === 'impound') as any
+    const error = vi.fn()
+
+    for (const importer of ['src/\0virtual-mod', '\0virtual\0mod', '/\0virtual\0mod']) {
+      expect(await plugin.resolveId.call({ error }, 'secret.js', importer)).toBeUndefined()
+    }
+    expect(error).not.toHaveBeenCalled()
+  })
+
   it('respects include for virtual modules', async () => {
     const code = await build({ include: [/^src\//] })
     expect(code).toContain('TOP-SECRET')
