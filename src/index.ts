@@ -692,7 +692,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     excludeFilter: options.excludeFiles?.length
       ? createFilter(options.excludeFiles, undefined, { resolve: cwd })
       : undefined,
-    warnedMessages: options.warn !== 'always' ? new Set<string>() : undefined,
+    // Deduplicate warnings only. Every denied request must still fail when error is enabled.
+    warnedMessages: options.error === false && options.warn !== 'always' ? new Set<string>() : undefined,
   }))
 
   function includes(matcher: MatcherState, id: string): boolean {
