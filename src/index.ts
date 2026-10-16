@@ -698,7 +698,8 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   function includes(matcher: MatcherState, id: string): boolean {
     let included = matcher.filterCache.get(id)
     if (included === undefined) {
-      included = matcher.filter(id)
+      // createFilter rejects Rollup's \0 virtual-module marker before include can match.
+      included = matcher.filter(id.includes('\0') ? id.replaceAll('\0', '') : id)
       matcher.filterCache.set(id, included)
     }
     return included
