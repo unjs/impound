@@ -698,7 +698,15 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   function includes(matcher: MatcherState, id: string): boolean {
     let included = matcher.filterCache.get(id)
     if (included === undefined) {
-      included = matcher.filter(id)
+      // createFilter rejects null bytes; strip only known virtual-module prefixes.
+      let filterId = id
+      if (id.startsWith('\0')) {
+        filterId = id.slice(1)
+      }
+      else if (id.startsWith('/\0')) {
+        filterId = `/${id.slice(2)}`
+      }
+      included = matcher.filter(filterId)
       matcher.filterCache.set(id, included)
     }
     return included
