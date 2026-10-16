@@ -73,6 +73,19 @@ describe('impound plugin', () => {
     errorSpy.mockRestore()
   })
 
+  it('raises the same denied import error on every request', () => {
+    const raw = ImpoundPlugin.raw({ patterns: [['secret']], error: true }, { framework: 'rollup', versions: {} })
+    const plugin = (Array.isArray(raw) ? raw : [raw]).find(p => p.name === 'impound') as any
+    const error = vi.fn((message: string) => {
+      throw new Error(message)
+    })
+    const context = { error }
+
+    expect(() => plugin.resolveId.call(context, 'secret', 'entry.js')).toThrow('Invalid import')
+    expect(() => plugin.resolveId.call(context, 'secret', 'entry.js')).toThrow('Invalid import')
+    expect(error).toHaveBeenCalledTimes(2)
+  })
+
   it('supports using matchers array syntax', async () => {
     const result = await process(code('bar'), {
       matchers: [
