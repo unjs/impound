@@ -1,5 +1,5 @@
 import type { RollupError } from 'rollup'
-import type { ObjectHook } from 'unplugin'
+import type { LoadHookFilter, ObjectHook, TransformHookFilter } from 'unplugin'
 import type { ImpoundOptions, ImpoundViolationInfo } from '../src'
 import { rollup } from 'rollup'
 import { describe, expect, it, vi } from 'vitest'
@@ -1799,7 +1799,7 @@ describe('hook filters', () => {
     const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
     const impoundPlugin = plugins.find(p => p.name === 'impound')!
 
-    const loadFilter = (impoundPlugin.load as ObjectHook<any, 'id'>).filter!.id as RegExp
+    const loadFilter = (impoundPlugin.load as ObjectHook<any, LoadHookFilter>).filter!.id as RegExp
     expect(loadFilter.test('\0impound:proxy')).toBe(true)
     expect(loadFilter.test('/app/assets/font.woff2')).toBe(false)
     expect(loadFilter.test('/app/entry.js')).toBe(false)
@@ -1810,7 +1810,7 @@ describe('hook filters', () => {
     const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
     const impoundPlugin = plugins.find(p => p.name === 'impound')!
 
-    expect((impoundPlugin.load as ObjectHook<any, 'id'>).handler.call({}, 'entry.js')).toBeUndefined()
+    expect((impoundPlugin.load as ObjectHook<any, LoadHookFilter>).handler.call({}, 'entry.js')).toBeUndefined()
   })
 
   it('should resolve the proxy module to itself', () => {
@@ -1839,7 +1839,7 @@ describe('hook filters', () => {
     const plugins = Array.isArray(rawPlugins) ? rawPlugins : [rawPlugins]
     const tracePlugin = plugins.find(p => p.name === 'impound:trace')!
 
-    const excludeFilter = ((tracePlugin.transform as ObjectHook<any, 'id'>).filter!.id as { exclude: RegExp }).exclude
+    const excludeFilter = ((tracePlugin.transform as ObjectHook<any, TransformHookFilter>).filter!.id as { exclude: RegExp }).exclude
     expect(excludeFilter.test('/app/assets/font.woff2')).toBe(true)
     expect(excludeFilter.test('/app/assets/logo.png?inline')).toBe(true)
     expect(excludeFilter.test('/app/entry.js')).toBe(false)
@@ -1862,7 +1862,7 @@ describe('hook filters', () => {
     const plugins = ImpoundPlugin[framework]({ trace: true, patterns: [['bar']] }) as any[]
     const tracePlugin = plugins.find(p => p.name === 'impound:trace')!
 
-    const excludeFilter = (tracePlugin.transform as ObjectHook<any, 'id'>).filter!.id as { exclude: RegExp }
+    const excludeFilter = (tracePlugin.transform as ObjectHook<any, TransformHookFilter>).filter!.id as { exclude: RegExp }
     expect(excludeFilter.exclude.test('/app/assets/font.woff2')).toBe(true)
     expect(excludeFilter.exclude.test('/app/assets/logo.png?inline')).toBe(true)
     expect(excludeFilter.exclude.test('/app/entry.js')).toBe(false)
