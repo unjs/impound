@@ -1,3 +1,4 @@
+import type { Import } from 'es-module-lexer'
 import type { SourceMap } from 'rollup'
 import type { UnpluginBuildContext, UnpluginContext, UnpluginOptions } from 'unplugin'
 import { originalPositionFor, sourceContentFor, TraceMap } from '@jridgewell/trace-mapping'
@@ -164,25 +165,25 @@ interface PendingViolation {
 }
 
 /** Map imports to 1-indexed lines and 0-indexed UTF-16 columns. */
-function getImportLocations(code: string, imports: readonly { n: string | undefined, s: number, ss: number, se: number }[]): Map<string, ImportLocation> {
+function getImportLocations(code: string, imports: readonly Import[]): Map<string, ImportLocation> {
   const locations = new Map<string, ImportLocation>()
   let line = 1
   let lastNewline = -1
   let offset = 0
 
   for (const imp of imports) {
-    if (!imp.n)
+    if (!imp.specifier || (imp.type !== 'dynamic' && imp.typeOnly))
       continue
 
     /* v8 ignore start -- es-module-lexer emits source-ordered imports; a reset only if that changes */
-    if (imp.s < offset) {
+    if (imp.start < offset) {
       line = 1
       lastNewline = -1
       offset = 0
     }
     /* v8 ignore stop */
 
-    while (offset < imp.s && offset < code.length) {
+    while (offset < imp.start && offset < code.length) {
       if (code[offset] === '\n') {
         line++
         lastNewline = offset
@@ -190,11 +191,11 @@ function getImportLocations(code: string, imports: readonly { n: string | undefi
       offset++
     }
 
-    locations.set(imp.n, {
+    locations.set(imp.specifier, {
       line,
-      column: imp.s - lastNewline - 1,
-      statementStart: imp.ss,
-      statementEnd: imp.se,
+      column: imp.start - lastNewline - 1,
+      statementStart: imp.importStart,
+      statementEnd: imp.importEnd,
     })
   }
 
@@ -499,7 +500,7 @@ function whenLexerReady(): Promise<void> | undefined {
   if (lexerReady) {
     return
   }
-  return init.then(() => {
+  return init().then(() => {
     lexerReady = true
   })
 }

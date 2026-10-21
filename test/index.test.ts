@@ -167,6 +167,15 @@ describe('trace mode', () => {
       column: 8,
     },
     {
+      name: 'a runtime import followed by a type-only import',
+      code: [
+        'import { value } from \'secret\'',
+        'import type { Value } from \'secret\'',
+      ].join('\n'),
+      line: 1,
+      column: 23,
+    },
+    {
       name: 'a multiline import',
       code: [
         'import {',
